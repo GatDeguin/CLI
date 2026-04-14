@@ -10,7 +10,7 @@ export interface ImagingStudyInput {
 @Injectable()
 export class RisPacsAdapter extends BaseIntegrationAdapter {
   constructor() {
-    super('ris-pacs', process.env.RIS_PACS_API_BASE_URL ?? '', process.env.RIS_PACS_API_KEY ?? '');
+    super('ris-pacs', process.env.RIS_PACS_API_URL ?? '', process.env.RIS_PACS_API_KEY ?? '');
   }
 
   async registerStudy(study: ImagingStudyInput, correlationId: string): Promise<{ studyUid: string }> {

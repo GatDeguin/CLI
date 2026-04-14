@@ -11,7 +11,7 @@ export interface LegacyShift {
 @Injectable()
 export class LegacySchedulingAdapter extends BaseIntegrationAdapter {
   constructor() {
-    super('legacy-scheduling', process.env.LEGACY_API_BASE_URL ?? '', process.env.LEGACY_API_KEY ?? '');
+    super('legacy-scheduling', process.env.LEGACY_API_URL ?? '', process.env.LEGACY_API_KEY ?? '');
   }
 
   async fetchShifts(date: string, correlationId: string): Promise<LegacyShift[]> {

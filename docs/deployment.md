@@ -18,7 +18,13 @@
 - `DATABASE_URL`
 - `REDIS_URL`
 - `MERCADO_PAGO_WEBHOOK_SECRET`
-- credenciales de integraciones (`*_API_KEY`, `*_API_BASE_URL`)
+- credenciales de integraciones (`*_API_KEY`, `*_API_URL`)
+
+
+## Validación de configuración (fail-fast)
+- El bootstrap de la API valida configuración crítica al iniciar.
+- Si falta una variable requerida o un `*_API_URL` no tiene esquema `http(s)`, el proceso termina inmediatamente con un mensaje explícito.
+- Variables críticas actuales: `DATABASE_URL`, `REDIS_URL`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `LEGACY_API_URL`, `LEGACY_API_KEY`, `LAB_API_URL`, `LAB_API_KEY`, `RIS_PACS_API_URL`, `RIS_PACS_API_KEY`.
 
 ## GitHub Pages (admin-web)
 
