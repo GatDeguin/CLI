@@ -7,6 +7,7 @@ Documentación funcional y técnica del proyecto.
 - [architecture](./architecture.md)
 - [information-architecture](./information-architecture.md)
 - [user-flows](./user-flows.md)
+- [branding-and-design-system](./branding-and-design-system.md)
 - [roles-and-permissions](./roles-and-permissions.md)
 - [business-rules](./business-rules.md)
 - [coverage-matrix-model](./coverage-matrix-model.md)
