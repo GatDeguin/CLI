@@ -7,16 +7,26 @@
     "build": "nest build",
     "lint": "eslint .",
     "test": "echo 'No tests configured yet'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate deploy",
+    "prisma:seed": "prisma db seed"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
     "@nestjs/core": "^10.0.0",
+    "@prisma/client": "^6.7.0",
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.0.0",
-    "typescript": "^5.5.0"
+    "prisma": "^6.7.0",
+    "typescript": "^5.5.0",
+    "tsx": "^4.19.2",
+    "@types/node": "^22.15.3"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }
