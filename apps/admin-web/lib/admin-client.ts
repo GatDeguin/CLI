@@ -22,6 +22,42 @@ const toCsv = (module: ModuleKey) => {
 
 const ensureBrowser = () => typeof window !== 'undefined';
 
+const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
+
+const PUBLIC_API_BASE_URL = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_BASE_URL ?? '');
+
+const hasApiBaseUrl = () => PUBLIC_API_BASE_URL.length > 0;
+
+const buildApiUrl = (path: string) => {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `${PUBLIC_API_BASE_URL}${normalizedPath}`;
+};
+
+const parseError = async (response: Response) => {
+  try {
+    const payload = await response.json();
+    return payload?.message ?? `HTTP ${response.status}`;
+  } catch {
+    return `HTTP ${response.status}`;
+  }
+};
+
+const fetchJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
+  const response = await fetch(buildApiUrl(path), {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseError(response));
+  }
+
+  return response.json() as Promise<T>;
+};
+
 export const getCurrentOperator = (): Operator | null => {
   if (!ensureBrowser()) {
     return null;
@@ -52,7 +88,7 @@ export const logout = () => {
   window.localStorage.removeItem(SESSION_STORAGE_KEY);
 };
 
-export const getModuleRecords = ({
+export const getModuleRecords = async ({
   module,
   q,
   status,
@@ -66,7 +102,18 @@ export const getModuleRecords = ({
   page: number;
   pageSize: number;
   operator: Operator;
-}): RecordListResponse => {
+}): Promise<RecordListResponse> => {
+  if (hasApiBaseUrl()) {
+    return fetchJson<RecordListResponse>(
+      `/admin/modules/${module}/records?q=${encodeURIComponent(q)}&status=${encodeURIComponent(status)}&page=${page}&pageSize=${pageSize}`,
+      {
+        headers: {
+          'X-Operator-Id': operator.id,
+        },
+      },
+    );
+  }
+
   if (!hasModule(module)) {
     return { page, pageSize, total: 0, items: [] };
   }
@@ -97,7 +144,15 @@ export const getModuleRecords = ({
   };
 };
 
-export const getRecordHistory = ({ module, recordId, operator }: { module: string; recordId: string; operator: Operator }): HistoryEvent[] => {
+export const getRecordHistory = async ({ module, recordId, operator }: { module: string; recordId: string; operator: Operator }): Promise<HistoryEvent[]> => {
+  if (hasApiBaseUrl()) {
+    return fetchJson<HistoryEvent[]>(`/admin/modules/${module}/records/${recordId}/history`, {
+      headers: {
+        'X-Operator-Id': operator.id,
+      },
+    });
+  }
+
   if (!hasModule(module) || !operator.permissions.find((entry) => entry.module === module)) {
     return [];
   }
@@ -105,7 +160,7 @@ export const getRecordHistory = ({ module, recordId, operator }: { module: strin
   return (historyByRecord[recordId] ?? []).map(cloneHistory);
 };
 
-export const interveneRecord = ({
+export const interveneRecord = async ({
   module,
   record,
   action,
@@ -115,7 +170,17 @@ export const interveneRecord = ({
   record: AdminRecord;
   action: InterventionAction;
   operator: Operator;
-}): HistoryEvent[] => {
+}): Promise<HistoryEvent[]> => {
+  if (hasApiBaseUrl()) {
+    return fetchJson<HistoryEvent[]>(`/admin/modules/${module}/records/${record.id}/interventions`, {
+      method: 'POST',
+      headers: {
+        'X-Operator-Id': operator.id,
+      },
+      body: JSON.stringify({ action }),
+    });
+  }
+
   if (!hasModule(module)) {
     return [];
   }
@@ -139,7 +204,21 @@ export const interveneRecord = ({
   return getRecordHistory({ module, recordId: record.id, operator });
 };
 
-export const exportModuleFile = ({ module, format, operator }: { module: string; format: 'csv' | 'xlsx'; operator: Operator }) => {
+export const exportModuleFile = async ({ module, format, operator }: { module: string; format: 'csv' | 'xlsx'; operator: Operator }): Promise<Blob | null> => {
+  if (hasApiBaseUrl()) {
+    const response = await fetch(buildApiUrl(`/admin/modules/${module}/export?format=${format}`), {
+      headers: {
+        'X-Operator-Id': operator.id,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(await parseError(response));
+    }
+
+    return response.blob();
+  }
+
   if (!hasModule(module)) {
     return null;
   }

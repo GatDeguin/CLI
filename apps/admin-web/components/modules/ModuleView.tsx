@@ -18,6 +18,7 @@ export function ModuleView({ module, operator }: Props) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEvent[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const selected = data?.items.find((item) => item.id === selectedId) ?? data?.items[0] ?? null;
 
@@ -27,35 +28,80 @@ export function ModuleView({ module, operator }: Props) {
   }, [data]);
 
   useEffect(() => {
-    setLoading(true);
-    const payload = getModuleRecords({
-      module: module.module,
-      q: query,
-      status,
-      page,
-      pageSize: 8,
-      operator,
-    });
-    setData(payload);
-    setSelectedId((previous) => previous ?? payload.items[0]?.id ?? null);
-    setLoading(false);
+    let active = true;
+
+    const loadRecords = async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const payload = await getModuleRecords({
+          module: module.module,
+          q: query,
+          status,
+          page,
+          pageSize: 8,
+          operator,
+        });
+
+        if (!active) {
+          return;
+        }
+
+        setData(payload);
+        setSelectedId((previous) => previous ?? payload.items[0]?.id ?? null);
+      } catch (loadError) {
+        if (!active) {
+          return;
+        }
+        setError(loadError instanceof Error ? loadError.message : 'No se pudieron cargar los registros.');
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadRecords();
+
+    return () => {
+      active = false;
+    };
   }, [module.module, query, status, page, operator]);
 
   useEffect(() => {
-    if (!selected) {
-      setHistory([]);
-      return;
-    }
+    let active = true;
 
-    setHistory(getRecordHistory({ module: module.module, recordId: selected.id, operator }));
+    const loadHistory = async () => {
+      if (!selected) {
+        setHistory([]);
+        return;
+      }
+
+      try {
+        const events = await getRecordHistory({ module: module.module, recordId: selected.id, operator });
+        if (active) {
+          setHistory(events);
+        }
+      } catch {
+        if (active) {
+          setHistory([]);
+        }
+      }
+    };
+
+    loadHistory();
+
+    return () => {
+      active = false;
+    };
   }, [selected?.id, module.module, operator]);
 
-  const intervene = (record: AdminRecord, action: InterventionAction) => {
-    setHistory(interveneRecord({ module: module.module, record, action, operator }));
+  const intervene = async (record: AdminRecord, action: InterventionAction) => {
+    setHistory(await interveneRecord({ module: module.module, record, action, operator }));
   };
 
-  const exportFile = (format: 'csv' | 'xlsx') => {
-    const blob = exportModuleFile({ module: module.module, format, operator });
+  const exportFile = async (format: 'csv' | 'xlsx') => {
+    const blob = await exportModuleFile({ module: module.module, format, operator });
     if (!blob) {
       return;
     }
@@ -85,6 +131,7 @@ export function ModuleView({ module, operator }: Props) {
           </>
         )}
       </div>
+      {error && <p style={{ color: '#b00020' }}>{error}</p>}
 
       <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 16 }}>
         <div style={{ border: '1px solid #dbe3f4', borderRadius: 8, background: '#fff', overflowX: 'auto' }}>
