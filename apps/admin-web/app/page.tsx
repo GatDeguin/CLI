@@ -9,6 +9,7 @@ import { DocumentosView } from '../components/modules/DocumentosView';
 import { PagosView } from '../components/modules/PagosView';
 import { ParametrosView } from '../components/modules/ParametrosView';
 import { ProfesionalesView } from '../components/modules/ProfesionalesView';
+import { getCurrentOperator, login, logout } from '../lib/admin-client';
 import { ModuleKey, ModulePermission, Operator } from '../lib/admin-types';
 
 const labels: Record<ModuleKey, string> = {
@@ -34,21 +35,14 @@ function Login({ onLogged }: { onLogged: (operator: Operator) => void }) {
         <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Usuario" />
         <input value={password} type="password" onChange={(e) => setPassword(e.target.value)} placeholder="Contraseña" />
         <button
-          onClick={async () => {
+          onClick={() => {
             setError('');
-            const response = await fetch('/api/auth/login', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ username, password }),
-            });
-
-            if (!response.ok) {
+            const operator = login(username, password);
+            if (!operator) {
               setError('Credenciales inválidas');
               return;
             }
-
-            const payload = (await response.json()) as { operator: Operator };
-            onLogged(payload.operator);
+            onLogged(operator);
           }}
         >
           Iniciar sesión
@@ -59,8 +53,8 @@ function Login({ onLogged }: { onLogged: (operator: Operator) => void }) {
   );
 }
 
-function ModuleRenderer({ permission }: { permission: ModulePermission }) {
-  const props = { module: permission };
+function ModuleRenderer({ permission, operator }: { permission: ModulePermission; operator: Operator }) {
+  const props = { module: permission, operator };
   switch (permission.module) {
     case 'profesionales':
       return <ProfesionalesView {...props} />;
@@ -86,16 +80,10 @@ export default function HomePage() {
   const [activeModule, setActiveModule] = useState<ModuleKey | null>(null);
 
   useEffect(() => {
-    const loadSession = async () => {
-      const response = await fetch('/api/me');
-      if (!response.ok) {
-        return;
-      }
-      const payload = (await response.json()) as { operator: Operator };
-      setOperator(payload.operator);
-    };
-
-    loadSession();
+    const currentOperator = getCurrentOperator();
+    if (currentOperator) {
+      setOperator(currentOperator);
+    }
   }, []);
 
   useEffect(() => {
@@ -120,8 +108,8 @@ export default function HomePage() {
         <h1 style={{ margin: 0 }}>Admin Web · RF-064 a RF-077</h1>
         <p>Operador: <strong>{operator.name}</strong> ({operator.role})</p>
         <button
-          onClick={async () => {
-            await fetch('/api/auth/logout', { method: 'POST' });
+          onClick={() => {
+            logout();
             setOperator(null);
             setActiveModule(null);
           }}
@@ -147,7 +135,7 @@ export default function HomePage() {
         ))}
       </nav>
 
-      {activePermission ? <ModuleRenderer permission={activePermission} /> : <p>Sin módulos habilitados.</p>}
+      {activePermission ? <ModuleRenderer permission={activePermission} operator={operator} /> : <p>Sin módulos habilitados.</p>}
     </main>
   );
 }

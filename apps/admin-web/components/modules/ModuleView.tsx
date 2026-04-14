@@ -2,13 +2,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-import { AdminRecord, HistoryEvent, ModulePermission, RecordListResponse } from '../../lib/admin-types';
+import { exportModuleFile, getModuleRecords, getRecordHistory, interveneRecord } from '../../lib/admin-client';
+import { AdminRecord, HistoryEvent, InterventionAction, ModulePermission, Operator, RecordListResponse } from '../../lib/admin-types';
 
 type Props = {
   module: ModulePermission;
+  operator: Operator;
 };
 
-export function ModuleView({ module }: Props) {
+export function ModuleView({ module, operator }: Props) {
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('Todos');
   const [page, setPage] = useState(1);
@@ -25,23 +27,19 @@ export function ModuleView({ module }: Props) {
   }, [data]);
 
   useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-      const params = new URLSearchParams({ q: query, status, page: String(page), pageSize: '8' });
-      const response = await fetch(`/api/modules/${module.module}/records?${params.toString()}`);
-      if (!response.ok) {
-        setData(null);
-        setLoading(false);
-        return;
-      }
-      const payload = (await response.json()) as RecordListResponse;
-      setData(payload);
-      setSelectedId((previous) => previous ?? payload.items[0]?.id ?? null);
-      setLoading(false);
-    };
-
-    load();
-  }, [module.module, query, status, page]);
+    setLoading(true);
+    const payload = getModuleRecords({
+      module: module.module,
+      q: query,
+      status,
+      page,
+      pageSize: 8,
+      operator,
+    });
+    setData(payload);
+    setSelectedId((previous) => previous ?? payload.items[0]?.id ?? null);
+    setLoading(false);
+  }, [module.module, query, status, page, operator]);
 
   useEffect(() => {
     if (!selected) {
@@ -49,37 +47,19 @@ export function ModuleView({ module }: Props) {
       return;
     }
 
-    const loadHistory = async () => {
-      const response = await fetch(`/api/modules/${module.module}/records/${selected.id}/history`);
-      if (!response.ok) {
-        setHistory([]);
-        return;
-      }
-      const payload = (await response.json()) as { items: HistoryEvent[] };
-      setHistory(payload.items);
-    };
+    setHistory(getRecordHistory({ module: module.module, recordId: selected.id, operator }));
+  }, [selected?.id, module.module, operator]);
 
-    loadHistory();
-  }, [selected?.id, module.module]);
-
-  const intervene = async (record: AdminRecord, action: string) => {
-    await fetch(`/api/modules/${module.module}/records/${record.id}/actions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action }),
-    });
-
-    const historyResponse = await fetch(`/api/modules/${module.module}/records/${record.id}/history`);
-    const payload = (await historyResponse.json()) as { items: HistoryEvent[] };
-    setHistory(payload.items);
+  const intervene = (record: AdminRecord, action: InterventionAction) => {
+    setHistory(interveneRecord({ module: module.module, record, action, operator }));
   };
 
-  const exportFile = async (format: 'csv' | 'xlsx') => {
-    const response = await fetch(`/api/modules/${module.module}/export?format=${format}`);
-    if (!response.ok) {
+  const exportFile = (format: 'csv' | 'xlsx') => {
+    const blob = exportModuleFile({ module: module.module, format, operator });
+    if (!blob) {
       return;
     }
-    const blob = await response.blob();
+
     const href = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = href;
