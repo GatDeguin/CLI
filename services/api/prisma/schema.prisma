@@ -203,7 +203,7 @@ model Site {
 }
 
 model Agenda {
-  id             String      @id @default(cuid())
+  id             String       @id @default(cuid())
   professionalId String
   siteId         String
   validFrom      DateTime
@@ -224,9 +224,26 @@ model Slot {
   isAvailable Boolean       @default(true)
   agenda      Agenda        @relation(fields: [agendaId], references: [id])
   appointment Appointment?
+  holds       SlotHold[]
 
   @@unique([agendaId, startsAt])
   @@index([startsAt, endsAt])
+}
+
+model SlotHold {
+  id            String   @id @default(cuid())
+  idempotencyKey String  @unique
+  slotId         String
+  patientId      String
+  correlationId  String
+  expiresAt      DateTime
+  releasedAt     DateTime?
+  releaseReason  String?
+  createdAt      DateTime @default(now())
+  slot           Slot     @relation(fields: [slotId], references: [id])
+
+  @@index([slotId, expiresAt, releasedAt])
+  @@index([patientId, createdAt])
 }
 
 model Appointment {
@@ -239,21 +256,48 @@ model Appointment {
   updatedAt    DateTime          @updatedAt
   patient      Patient           @relation(fields: [patientId], references: [id])
   slot         Slot              @relation(fields: [slotId], references: [id])
+  payments     Payment[]
 
   @@index([patientId, status])
 }
 
 model Payment {
   id              String       @id @default(cuid())
+  providerPaymentId String?
   patientId       String
   appointmentId   String?
   amount          Decimal      @db.Decimal(10, 2)
   currency        String       @default("ARS")
   status          PaymentStatus
+  externalReference String?
   createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
   patient         Patient      @relation(fields: [patientId], references: [id])
+  appointment     Appointment? @relation(fields: [appointmentId], references: [id])
+  events          PaymentEvent[]
 
   @@index([patientId, status])
+  @@index([appointmentId])
+  @@index([externalReference])
+  @@unique([providerPaymentId])
+}
+
+model PaymentEvent {
+  id             String   @id @default(cuid())
+  idempotencyKey String   @unique
+  provider       String
+  providerEventId String
+  action         String
+  paymentId      String?
+  correlationId  String
+  rawPayload     Json
+  accepted       Boolean
+  reason         String?
+  processedAt    DateTime @default(now())
+  payment        Payment? @relation(fields: [paymentId], references: [id])
+
+  @@index([provider, providerEventId])
+  @@index([processedAt])
 }
 
 model Document {
