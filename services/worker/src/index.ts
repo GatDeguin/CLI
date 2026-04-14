@@ -25,9 +25,15 @@ const slotHoldExpirationQueue = new Queue('slot-hold-expiration', {
   connection,
   defaultJobOptions
 });
+const notificationsDispatchQueue = new Queue('notifications-dispatch', {
+  connection,
+  defaultJobOptions
+});
 
 const deadLetterQueue = new Queue('payments-reconciliation-dlq', { connection });
+const notificationsDeadLetterQueue = new Queue('notifications-dispatch-dlq', { connection });
 const queueEvents = new QueueEvents('payments-reconciliation', { connection });
+const notificationsQueueEvents = new QueueEvents('notifications-dispatch', { connection });
 
 queueEvents.on('failed', async ({ jobId, failedReason }) => {
   const correlationId = randomUUID();
@@ -45,6 +51,32 @@ queueEvents.on('failed', async ({ jobId, failedReason }) => {
     failedReason,
     correlationId
   });
+});
+
+notificationsQueueEvents.on('failed', async ({ jobId, failedReason }) => {
+  const correlationId = randomUUID();
+  await notificationsDeadLetterQueue.add('dead-lettered-notification', {
+    jobId,
+    failedReason,
+    correlationId,
+    movedAt: new Date().toISOString()
+  });
+
+  const dispatchId = String(jobId ?? '').split(':')[0];
+  if (dispatchId) {
+    await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${dispatchId}/status`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
+      },
+      body: JSON.stringify({
+        status: 'DEAD_LETTERED',
+        error: failedReason,
+        metadata: { jobId }
+      })
+    }).catch(() => null);
+  }
 });
 
 const worker = new Worker(
@@ -121,6 +153,59 @@ const slotExpirationWorker = new Worker(
   { connection, lockDuration: 60_000 }
 );
 
+const notificationsWorker = new Worker(
+  'notifications-dispatch',
+  async (job) => {
+    const payload = job.data as { dispatchId: string; eventId: string; correlationId?: string };
+    const providerRef = `mock-${randomUUID()}`;
+    const correlationId = payload.correlationId ?? randomUUID();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    if ((job.attemptsMade ?? 0) < 2 && Math.random() < 0.2) {
+      await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${payload.dispatchId}/status`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
+        },
+        body: JSON.stringify({
+          status: 'FAILED',
+          error: 'provider-temporal-error',
+          metadata: { eventId: payload.eventId, correlationId }
+        })
+      });
+      throw new Error('provider-temporal-error');
+    }
+
+    await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${payload.dispatchId}/status`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
+      },
+      body: JSON.stringify({
+        status: 'SENT',
+        providerRef,
+        metadata: { eventId: payload.eventId, correlationId }
+      })
+    });
+
+    await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${payload.dispatchId}/status`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
+      },
+      body: JSON.stringify({
+        status: 'DELIVERED',
+        providerRef,
+        metadata: { deliveredAt: new Date().toISOString() }
+      })
+    });
+  },
+  { connection, lockDuration: 30_000 }
+);
+
 worker.on('failed', (job, error) => {
   console.error({
     type: 'audit.reconciliation.failed',
@@ -137,6 +222,35 @@ slotExpirationWorker.on('failed', (job, error) => {
     attemptsMade: job?.attemptsMade,
     error: error.message
   });
+});
+
+notificationsWorker.on('failed', async (job, error) => {
+  console.error({
+    type: 'audit.notifications.failed',
+    jobId: job?.id,
+    attemptsMade: job?.attemptsMade,
+    error: error.message
+  });
+
+  const payload = (job?.data ?? {}) as { dispatchId?: string; eventId?: string; correlationId?: string };
+  if (payload.dispatchId) {
+    await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${payload.dispatchId}/status`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
+      },
+      body: JSON.stringify({
+        status: 'REPROCESSED',
+        error: error.message,
+        metadata: {
+          eventId: payload.eventId,
+          correlationId: payload.correlationId,
+          attemptsMade: job?.attemptsMade
+        }
+      })
+    }).catch(() => null);
+  }
 });
 
 async function bootstrap() {

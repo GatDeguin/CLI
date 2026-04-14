@@ -58,6 +58,15 @@ enum NotificationStatus {
   READ
 }
 
+enum NotificationDispatchEventType {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  REPROCESSED
+  DEAD_LETTERED
+}
+
 enum FamilyPermissionType {
   MEDICAL_ORDERS
   DOCUMENTS
@@ -169,6 +178,7 @@ model Patient {
   payments             Payment[]
   documents            Document[]
   notifications        Notification[]
+  notificationDispatches NotificationDispatch[]
   familyPermissions    FamilyPermission[]
   documentAccessAudits DocumentAccessAudit[]
 
@@ -357,6 +367,64 @@ model Notification {
   patient     Patient             @relation(fields: [patientId], references: [id])
 
   @@index([patientId, status])
+}
+
+model NotificationTemplate {
+  id            String              @id @default(cuid())
+  eventKey      String
+  channel       NotificationChannel
+  titleTemplate String
+  bodyTemplate  String
+  active        Boolean             @default(true)
+  updatedBy     String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  dispatches    NotificationDispatch[]
+
+  @@unique([eventKey, channel])
+  @@index([eventKey, active])
+}
+
+model NotificationDispatch {
+  id             String                        @id @default(cuid())
+  eventId        String                        @unique
+  eventKey       String
+  patientId      String
+  channel        NotificationChannel
+  templateId     String?
+  status         NotificationStatus            @default(QUEUED)
+  title          String
+  body           String
+  payload        Json
+  attempts       Int                           @default(0)
+  maxAttempts    Int                           @default(4)
+  correlationId  String?
+  providerRef    String?
+  lastError      String?
+  queuedAt       DateTime                      @default(now())
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  failedAt       DateTime?
+  deadLetteredAt DateTime?
+  createdAt      DateTime                      @default(now())
+  updatedAt      DateTime                      @updatedAt
+  patient        Patient                       @relation(fields: [patientId], references: [id])
+  template       NotificationTemplate?         @relation(fields: [templateId], references: [id])
+  audits         NotificationDispatchAudit[]
+
+  @@index([patientId, status])
+  @@index([eventKey, channel])
+}
+
+model NotificationDispatchAudit {
+  id          String                        @id @default(cuid())
+  dispatchId  String
+  eventType   NotificationDispatchEventType
+  metadata    Json?
+  createdAt   DateTime                      @default(now())
+  dispatch    NotificationDispatch          @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+
+  @@index([dispatchId, createdAt])
 }
 
 model AuditLog {
