@@ -1,4 +1,4 @@
-import { Body, Controller, Headers, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common';
 import { Public } from '../common/auth/public.decorator';
 import { PaymentsService } from './payments.service';
 
@@ -27,5 +27,27 @@ export class PaymentsController {
   @Public()
   reconcile(@Headers() headers: Record<string, string | undefined>, @Body() body?: { limit?: number }) {
     return this.paymentsService.reconcilePendingPayments(headers, body?.limit);
+  }
+
+  @Get(':paymentId/receipt')
+  getReceipt(@Headers() headers: Record<string, string | undefined>, @Param('paymentId') paymentId: string) {
+    return this.paymentsService.generateReceipt(headers, paymentId);
+  }
+
+  @Get('ledger/events')
+  getLedger(
+    @Headers() headers: Record<string, string | undefined>,
+    @Query('paymentId') paymentId?: string,
+    @Query('appointmentId') appointmentId?: string
+  ) {
+    return this.paymentsService.getPaymentLedger(headers, { paymentId, appointmentId });
+  }
+
+  @Get('treasury/export')
+  exportTreasury(
+    @Headers() headers: Record<string, string | undefined>,
+    @Query('format') format: 'csv' | 'xlsx' = 'csv'
+  ) {
+    return this.paymentsService.exportTreasury(headers, format);
   }
 }

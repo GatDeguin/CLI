@@ -11,6 +11,8 @@
 | BR-06 | Publicar docs para perfiles/tipos elegibles | `RuleCode.DocumentPublication` |
 | BR-07 | Ignorar webhook duplicado por eventKey | `processedWebhookEvents` |
 | BR-08 | Rechazar webhook con firma inválida | `isValidSignature` |
+| BR-13 | Si pago no se acredita (rechazado/devuelto/error), anular turno y dejar trazabilidad inequívoca | `PaymentsService.syncAppointmentStatus` + `paymentEvent`/`auditLog` |
+| BR-14 | En error o reintento, registrar motivo/evidencia y marcar conciliado/no conciliado para tesorería | `PaymentsService.registerBrErrorPath/registerBrRetryPath` + reconciliación diaria |
 
 ## Evaluación
 Orden por prioridad ascendente, solo reglas habilitadas.

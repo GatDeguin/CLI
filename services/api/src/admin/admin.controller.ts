@@ -3,6 +3,7 @@ import { Public } from '../common/auth/public.decorator';
 import { Roles } from '../common/auth/roles.decorator';
 import { AdminService } from './admin.service';
 import { AdminInterventionDto, AdminLoginDto, ModuleQueryDto, UpdateUserRoleDto } from './dto/admin.dto';
+import { PaymentsService } from '../payments/payments.service';
 
 const REFRESH_COOKIE = 'admin_refresh_token';
 const REFRESH_MAX_AGE_SECONDS = Number(process.env.ADMIN_REFRESH_TTL_SECONDS ?? 60 * 60 * 24 * 7);
@@ -20,7 +21,10 @@ const parseCookie = (header: string | undefined, cookieName: string): string | n
 @Controller('admin')
 @Roles('ADMIN', 'AUDITOR', 'USER')
 export class AdminController {
-  constructor(private readonly service: AdminService) {}
+  constructor(
+    private readonly service: AdminService,
+    private readonly paymentsService: PaymentsService
+  ) {}
 
   @Public()
   @Post('auth/login')
@@ -117,6 +121,13 @@ export class AdminController {
     @Param('module') module: string,
     @Query('format') format: 'csv' | 'xlsx'
   ) {
+    if (module === 'pagos') {
+      return this.paymentsService.exportTreasury(
+        { 'x-correlation-id': `admin-export-${Date.now()}` },
+        format ?? 'csv'
+      );
+    }
+
     const records = await this.service.listRecords(req.user.role, module, { page: 1, pageSize: 200 });
     const headers = ['id', 'estado', 'cobertura', 'profesional', 'paciente', 'detalle'];
     const rows = records.items.map((record: { id: string; estado: string; cobertura: string; profesional: string; paciente: string; detalle: string }) =>

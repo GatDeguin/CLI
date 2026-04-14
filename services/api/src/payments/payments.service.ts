@@ -1,5 +1,5 @@
 import { AppointmentStatus, PaymentStatus, Prisma } from '@prisma/client';
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { AuditTrailService } from '../observability/audit-trail.service';
 import { BusinessEventsService } from '../observability/business-events.service';
@@ -50,6 +50,7 @@ export class PaymentsService {
 
     if (!this.mercadoPagoAdapter.validateSignature(payload.id, signature)) {
       this.metricsService.countRejectedPayment('invalid-signature');
+      await this.registerBrErrorPath(correlationId, 'invalid-signature', { eventId: payload.id });
       await this.prisma.paymentEvent.create({
         data: {
           idempotencyKey,
@@ -77,21 +78,7 @@ export class PaymentsService {
         : null;
 
       if (updatedPayment?.appointmentId) {
-        await this.prisma.appointment.update({
-          where: { id: updatedPayment.appointmentId },
-          data: {
-            status:
-              paymentStatus === 'APPROVED'
-                ? AppointmentStatus.CONFIRMED
-                : paymentStatus === 'DECLINED' || paymentStatus === 'REFUNDED'
-                  ? AppointmentStatus.CANCELLED
-                  : AppointmentStatus.REQUESTED,
-            reason:
-              paymentStatus === 'DECLINED' || paymentStatus === 'REFUNDED'
-                ? 'Cancelado automáticamente por BR-13 ante pago no acreditado.'
-                : null
-          }
-        });
+        await this.syncAppointmentStatus(updatedPayment.appointmentId, paymentStatus, 'webhook');
       }
 
       await this.prisma.paymentEvent.create({
@@ -125,11 +112,13 @@ export class PaymentsService {
 
       if (!updatedPayment) {
         this.metricsService.countRejectedPayment('payment-not-found');
+        await this.registerBrErrorPath(correlationId, 'payment-not-found', payload);
       }
 
       return { accepted: true, reason: updatedPayment ? undefined : 'payment-not-found' };
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        await this.registerBrRetryPath(correlationId, 'duplicate-ignored', payload);
         return { accepted: true, reason: 'duplicate-ignored' };
       }
 
@@ -140,7 +129,17 @@ export class PaymentsService {
   async reconcilePendingPayments(
     headers: Record<string, string | undefined>,
     limit = 500
-  ): Promise<{ scanned: number; updated: number; approved: number; declined: number; refunded: number; pending: number }> {
+  ): Promise<{
+    scanned: number;
+    updated: number;
+    approved: number;
+    declined: number;
+    refunded: number;
+    pending: number;
+    reconciled: number;
+    unreconciled: number;
+    discrepancies: Array<{ paymentId: string; expected: string; actual: string; reason: string }>;
+  }> {
     const correlationId = this.correlationIdService.require(headers);
     const now = new Date();
     const pendingPayments = await this.prisma.payment.findMany({
@@ -154,6 +153,9 @@ export class PaymentsService {
     let declined = 0;
     let refunded = 0;
     let pending = 0;
+    let reconciled = 0;
+    let unreconciled = 0;
+    const discrepancies: Array<{ paymentId: string; expected: string; actual: string; reason: string }> = [];
 
     for (const payment of pendingPayments) {
       const ageMinutes = (now.getTime() - payment.createdAt.getTime()) / 60_000;
@@ -182,15 +184,27 @@ export class PaymentsService {
       });
 
       if (payment.appointmentId) {
-        await this.prisma.appointment.update({
-          where: { id: payment.appointmentId },
-          data: {
-            status: reconciledStatus === PaymentStatus.APPROVED ? AppointmentStatus.CONFIRMED : AppointmentStatus.CANCELLED,
-            reason:
-              reconciledStatus === PaymentStatus.APPROVED
-                ? null
-                : 'Cancelado automáticamente por conciliación de pago no acreditado.'
-          }
+        await this.syncAppointmentStatus(payment.appointmentId, reconciledStatus, 'reconciliation');
+        const appointment = await this.prisma.appointment.findUnique({ where: { id: payment.appointmentId } });
+        const expected = reconciledStatus === PaymentStatus.APPROVED ? AppointmentStatus.CONFIRMED : AppointmentStatus.CANCELLED;
+        if (!appointment || appointment.status !== expected) {
+          unreconciled += 1;
+          discrepancies.push({
+            paymentId: payment.id,
+            expected,
+            actual: appointment?.status ?? 'UNKNOWN',
+            reason: 'appointment-status-mismatch'
+          });
+        } else {
+          reconciled += 1;
+        }
+      } else {
+        unreconciled += 1;
+        discrepancies.push({
+          paymentId: payment.id,
+          expected: 'APPOINTMENT_LINKED',
+          actual: 'MISSING',
+          reason: 'payment-without-appointment'
         });
       }
     }
@@ -204,11 +218,214 @@ export class PaymentsService {
         updated,
         approved,
         declined,
-        refunded,
-        pending
+          refunded,
+          pending,
+          reconciled,
+          unreconciled,
+          discrepancies: discrepancies.slice(0, 50)
+        }
+      });
+
+    return {
+      scanned: pendingPayments.length,
+      updated,
+      approved,
+      declined,
+      refunded,
+      pending,
+      reconciled,
+      unreconciled,
+      discrepancies
+    };
+  }
+
+  async generateReceipt(headers: Record<string, string | undefined>, paymentId: string) {
+    const correlationId = this.correlationIdService.getOrCreate(headers);
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+      include: {
+        patient: true,
+        appointment: { include: { slot: true } },
+        events: { orderBy: { processedAt: 'asc' } }
       }
     });
+    if (!payment) throw new NotFoundException('Pago no encontrado');
 
-    return { scanned: pendingPayments.length, updated, approved, declined, refunded, pending };
+    return {
+      receiptId: `RCPT-${payment.id.slice(-8).toUpperCase()}`,
+      correlationId,
+      issuedAt: new Date().toISOString(),
+      payment: {
+        id: payment.id,
+        status: payment.status,
+        amount: Number(payment.amount),
+        currency: payment.currency,
+        externalReference: payment.externalReference
+      },
+      patient: {
+        id: payment.patient.id,
+        fullName: payment.patient.fullName,
+        dni: payment.patient.dni
+      },
+      appointment: payment.appointment
+        ? {
+            id: payment.appointment.id,
+            status: payment.appointment.status,
+            scheduledAt: payment.appointment.slot.startsAt.toISOString()
+          }
+        : null,
+      events: payment.events.map((event) => ({
+        id: event.id,
+        action: event.action,
+        accepted: event.accepted,
+        reason: event.reason,
+        processedAt: event.processedAt.toISOString()
+      }))
+    };
+  }
+
+  async getPaymentLedger(
+    headers: Record<string, string | undefined>,
+    filter: { paymentId?: string; appointmentId?: string }
+  ): Promise<{ correlationId: string; entries: Array<Record<string, string | number | boolean | null>> }> {
+    const correlationId = this.correlationIdService.getOrCreate(headers);
+    const paymentWhere: Prisma.PaymentWhereInput = {
+      ...(filter.paymentId ? { id: filter.paymentId } : {}),
+      ...(filter.appointmentId ? { appointmentId: filter.appointmentId } : {})
+    };
+
+    const payments = await this.prisma.payment.findMany({
+      where: paymentWhere,
+      include: {
+        appointment: true,
+        patient: true,
+        events: { orderBy: { processedAt: 'asc' } }
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 500
+    });
+
+    const entries = payments.flatMap((payment) => {
+      const coreEntry = {
+        type: 'payment',
+        paymentId: payment.id,
+        appointmentId: payment.appointmentId,
+        patientId: payment.patientId,
+        patientName: payment.patient.fullName,
+        status: payment.status,
+        amount: Number(payment.amount),
+        currency: payment.currency,
+        occurredAt: payment.updatedAt.toISOString()
+      };
+      const eventEntries = payment.events.map((event) => ({
+        type: 'payment_event',
+        paymentId: payment.id,
+        appointmentId: payment.appointmentId,
+        action: event.action,
+        accepted: event.accepted,
+        reason: event.reason ?? null,
+        occurredAt: event.processedAt.toISOString()
+      }));
+      const appointmentEntry = payment.appointment
+        ? [
+            {
+              type: 'appointment',
+              paymentId: payment.id,
+              appointmentId: payment.appointment.id,
+              appointmentStatus: payment.appointment.status,
+              appointmentReason: payment.appointment.reason ?? null,
+              occurredAt: payment.appointment.updatedAt.toISOString()
+            }
+          ]
+        : [];
+      return [coreEntry, ...eventEntries, ...appointmentEntry];
+    });
+
+    return { correlationId, entries };
+  }
+
+  async exportTreasury(headers: Record<string, string | undefined>, format: 'csv' | 'xlsx') {
+    const ledger = await this.getPaymentLedger(headers, {});
+    const headersRow = [
+      'type',
+      'paymentId',
+      'appointmentId',
+      'patientId',
+      'patientName',
+      'status',
+      'amount',
+      'currency',
+      'action',
+      'accepted',
+      'reason',
+      'occurredAt'
+    ];
+    const rows = ledger.entries.map((entry) =>
+      [
+        entry.type,
+        entry.paymentId,
+        entry.appointmentId,
+        entry.patientId,
+        entry.patientName,
+        entry.status ?? entry.appointmentStatus,
+        entry.amount,
+        entry.currency,
+        entry.action,
+        entry.accepted,
+        entry.reason ?? entry.appointmentReason,
+        entry.occurredAt
+      ]
+        .map((value) => `"${String(value ?? '')}"`)
+        .join(',')
+    );
+    const csv = [headersRow.join(','), ...rows].join('\n');
+    return {
+      format,
+      contentType:
+        format === 'xlsx'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'text/csv; charset=utf-8',
+      data: format === 'xlsx' ? Buffer.from(csv, 'utf-8').toString('base64') : csv,
+      encoded: format === 'xlsx' ? 'base64' : 'plain'
+    };
+  }
+
+  private async syncAppointmentStatus(appointmentId: string, paymentStatus: PaymentStatus | string, source: string) {
+    const normalized = paymentStatus as PaymentStatus;
+    const shouldCancel = normalized === PaymentStatus.DECLINED || normalized === PaymentStatus.REFUNDED;
+    await this.prisma.appointment.update({
+      where: { id: appointmentId },
+      data: {
+        status:
+          normalized === PaymentStatus.APPROVED
+            ? AppointmentStatus.CONFIRMED
+            : shouldCancel
+              ? AppointmentStatus.CANCELLED
+              : AppointmentStatus.REQUESTED,
+        reason: shouldCancel ? `Cancelado automáticamente por BR-13/BR-14 (${source}) ante pago no acreditado.` : null
+      }
+    });
+  }
+
+  private async registerBrErrorPath(correlationId: string, reason: string, payload: unknown) {
+    this.auditTrailService.record({
+      actorId: 'payments-engine',
+      action: 'br13-br14-error-path',
+      resource: 'payment',
+      resourceId: correlationId,
+      correlationId,
+      metadata: { reason, payload, enforcedRules: ['BR-13', 'BR-14'] }
+    });
+  }
+
+  private async registerBrRetryPath(correlationId: string, reason: string, payload: unknown) {
+    this.auditTrailService.record({
+      actorId: 'payments-engine',
+      action: 'br13-br14-retry-path',
+      resource: 'payment',
+      resourceId: correlationId,
+      correlationId,
+      metadata: { reason, payload, enforcedRules: ['BR-13', 'BR-14'] }
+    });
   }
 }

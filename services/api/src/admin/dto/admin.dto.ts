@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString, MinLength } from 'class-validator';
+import { IsIn, IsNumber, IsOptional, IsString, Min, MinLength } from 'class-validator';
 
 export class UpdateUserRoleDto {
   @IsString()
@@ -48,4 +48,21 @@ export class AdminInterventionDto {
   @IsString()
   @IsIn(['cancelar', 'reprogramar', 'devolver', 'publicar'])
   action!: 'cancelar' | 'reprogramar' | 'devolver' | 'publicar';
+
+  @IsString()
+  @IsOptional()
+  reason?: string;
+
+  @IsString()
+  @IsOptional()
+  evidenceUrl?: string;
+
+  @IsString()
+  @IsOptional()
+  refundType?: 'total' | 'partial';
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.01)
+  refundAmount?: number;
 }
