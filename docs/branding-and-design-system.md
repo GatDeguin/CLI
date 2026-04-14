@@ -1,6 +1,6 @@
 # Branding y Design System
 
-Este documento define la base visual y de interacción para `apps/patient-mobile` y `apps/admin-web`, manteniendo coherencia institucional con Clínica Privada del Buen Pastor y preparando reemplazo de assets oficiales sin refactor.
+Este documento define la base visual y de interacción para `apps/patient-mobile` y `apps/admin-web`, manteniendo coherencia institucional con Clínica y preparando reemplazo de assets oficiales sin refactor.
 
 ## 1) Principios de marca
 

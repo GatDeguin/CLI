@@ -57,8 +57,8 @@ async function main() {
   const specialties = await prisma.$transaction([
     prisma.specialty.upsert({
       where: { code: 'CLN' },
-      update: { name: 'Clínica Médica' },
-      create: { code: 'CLN', name: 'Clínica Médica' }
+      update: { name: 'Clínica' },
+      create: { code: 'CLN', name: 'Clínica' }
     }),
     prisma.specialty.upsert({
       where: { code: 'PED' },
