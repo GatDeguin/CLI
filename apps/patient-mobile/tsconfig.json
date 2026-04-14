@@ -1,4 +1,9 @@
 {
   "extends": "../../packages/tsconfig/react-native.json",
-  "include": ["src", "App.tsx"]
+  "compilerOptions": {
+    "strict": true,
+    "baseUrl": ".",
+    "types": ["expo-router/types"]
+  },
+  "include": ["app", "src", "expo-env.d.ts"]
 }
