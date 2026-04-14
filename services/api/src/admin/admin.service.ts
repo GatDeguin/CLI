@@ -1,4 +1,5 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { AppointmentStatus, PaymentStatus } from '@prisma/client';
 import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto';
 import { JwtService } from '../common/auth/jwt.service';
 import { AdminRepository } from './admin.repository';
@@ -156,7 +157,99 @@ export class AdminService {
     this.requireModuleAccess(userRole, module, dto.action);
 
     if (module === 'pagos' && dto.action === 'devolver') {
-      await this.repo.prisma.payment.updateMany({ where: { id: recordId }, data: { status: 'REFUNDED' } });
+      const payment = await this.repo.prisma.payment.findUnique({ where: { id: recordId } });
+      if (!payment) {
+        throw new BadRequestException('Pago no encontrado');
+      }
+
+      const refundType = dto.refundType ?? 'total';
+      const requestedAmount = dto.refundAmount ?? Number(payment.amount);
+      if (refundType === 'partial' && requestedAmount >= Number(payment.amount)) {
+        throw new BadRequestException('Para devolución parcial el monto debe ser menor al monto del pago');
+      }
+      if (requestedAmount <= 0 || requestedAmount > Number(payment.amount)) {
+        throw new BadRequestException('Monto de devolución inválido');
+      }
+      if (!dto.reason?.trim()) {
+        throw new BadRequestException('Debe indicar motivo de devolución');
+      }
+
+      await this.repo.prisma.payment.update({
+        where: { id: recordId },
+        data: { status: PaymentStatus.REFUNDED }
+      });
+
+      if (payment.appointmentId) {
+        await this.repo.prisma.appointment.update({
+          where: { id: payment.appointmentId },
+          data: {
+            status: AppointmentStatus.CANCELLED,
+            reason: `Cancelado por BR-13/BR-14: devolución ${refundType} registrada por administración. Motivo: ${dto.reason}`
+          }
+        });
+      }
+
+      await this.repo.prisma.paymentEvent.create({
+        data: {
+          idempotencyKey: `admin-refund:${recordId}:${Date.now()}`,
+          provider: 'admin',
+          providerEventId: recordId,
+          action: refundType === 'partial' ? 'refund.partial' : 'refund.total',
+          paymentId: recordId,
+          correlationId: `admin-${userId}`,
+          rawPayload: {
+            reason: dto.reason,
+            evidenceUrl: dto.evidenceUrl ?? null,
+            refundType,
+            refundAmount: requestedAmount
+          },
+          accepted: true,
+          reason: 'admin-refund'
+        }
+      });
+    }
+
+    if (module === 'pagos' && dto.action === 'cancelar') {
+      if (!dto.reason?.trim()) {
+        throw new BadRequestException('Debe indicar motivo de anulación');
+      }
+
+      const payment = await this.repo.prisma.payment.findUnique({ where: { id: recordId } });
+      if (!payment) {
+        throw new BadRequestException('Pago no encontrado');
+      }
+
+      await this.repo.prisma.payment.update({
+        where: { id: recordId },
+        data: { status: PaymentStatus.DECLINED }
+      });
+
+      if (payment.appointmentId) {
+        await this.repo.prisma.appointment.update({
+          where: { id: payment.appointmentId },
+          data: {
+            status: AppointmentStatus.CANCELLED,
+            reason: `Cancelado por BR-13/BR-14: anulación administrativa. Motivo: ${dto.reason}`
+          }
+        });
+      }
+
+      await this.repo.prisma.paymentEvent.create({
+        data: {
+          idempotencyKey: `admin-void:${recordId}:${Date.now()}`,
+          provider: 'admin',
+          providerEventId: recordId,
+          action: 'payment.voided',
+          paymentId: recordId,
+          correlationId: `admin-${userId}`,
+          rawPayload: {
+            reason: dto.reason,
+            evidenceUrl: dto.evidenceUrl ?? null
+          },
+          accepted: true,
+          reason: 'admin-void'
+        }
+      });
     }
 
     await this.repo.prisma.auditLog.create({
@@ -165,7 +258,13 @@ export class AdminService {
         action: `Intervención: ${dto.action}`,
         entity: module,
         entityId: recordId,
-        payload: { action: dto.action }
+        payload: {
+          action: dto.action,
+          reason: dto.reason ?? null,
+          evidenceUrl: dto.evidenceUrl ?? null,
+          refundType: dto.refundType ?? null,
+          refundAmount: dto.refundAmount ?? null
+        }
       }
     });
 
