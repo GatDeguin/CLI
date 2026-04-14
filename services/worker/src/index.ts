@@ -1,263 +1,363 @@
-import { Queue, Worker, JobsOptions, QueueEvents } from 'bullmq';
-import Redis from 'ioredis';
+import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { JobsOptions, Queue, QueueEvents, Worker } from 'bullmq';
+import Redis from 'ioredis';
+
+type DomainKey =
+  | 'notifications'
+  | 'legacy-sync'
+  | 'laboratory-ingestion'
+  | 'documents-publication'
+  | 'payments-reconciliation'
+  | 'slot-hold-release';
+
+interface DomainRuntimeStats {
+  processed: number;
+  failed: number;
+  retries: number;
+  deadLettered: number;
+  lastProcessedAt?: string;
+  lastFailedAt?: string;
+}
+
+interface JobPayload {
+  correlationId?: string;
+  jobKey?: string;
+  [key: string]: unknown;
+}
 
 const redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const apiBaseUrl = process.env.API_BASE_URL ?? 'http://localhost:3000/v1';
+const workerToken = process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token';
+const metricsPort = Number(process.env.WORKER_METRICS_PORT ?? '9465');
 const connection = { url: redisUrl };
 const redis = new Redis(redisUrl, { maxRetriesPerRequest: 1 });
 
 const defaultJobOptions: JobsOptions = {
   attempts: 4,
-  backoff: {
-    type: 'exponential',
-    delay: 1_000
-  },
+  backoff: { type: 'exponential', delay: 1_000 },
   removeOnComplete: 1000,
   removeOnFail: 3000
 };
 
-const reconciliationQueue = new Queue('payments-reconciliation', {
-  connection,
-  defaultJobOptions
-});
-const slotHoldExpirationQueue = new Queue('slot-hold-expiration', {
-  connection,
-  defaultJobOptions
-});
-const notificationsDispatchQueue = new Queue('notifications-dispatch', {
-  connection,
-  defaultJobOptions
-});
+const domains: Record<DomainKey, { queueName: string; dlqName: string }> = {
+  notifications: { queueName: 'notifications-dispatch', dlqName: 'notifications-dispatch-dlq' },
+  'legacy-sync': { queueName: 'legacy-sync', dlqName: 'legacy-sync-dlq' },
+  'laboratory-ingestion': { queueName: 'laboratory-ingestion', dlqName: 'laboratory-ingestion-dlq' },
+  'documents-publication': { queueName: 'documents-publication', dlqName: 'documents-publication-dlq' },
+  'payments-reconciliation': { queueName: 'payments-reconciliation', dlqName: 'payments-reconciliation-dlq' },
+  'slot-hold-release': { queueName: 'slot-hold-expiration', dlqName: 'slot-hold-expiration-dlq' }
+};
 
-const deadLetterQueue = new Queue('payments-reconciliation-dlq', { connection });
-const notificationsDeadLetterQueue = new Queue('notifications-dispatch-dlq', { connection });
-const queueEvents = new QueueEvents('payments-reconciliation', { connection });
-const notificationsQueueEvents = new QueueEvents('notifications-dispatch', { connection });
+const queues = Object.fromEntries(
+  Object.entries(domains).map(([domain, cfg]) => [domain, new Queue(cfg.queueName, { connection, defaultJobOptions })])
+) as Record<DomainKey, Queue>;
 
-queueEvents.on('failed', async ({ jobId, failedReason }) => {
-  const correlationId = randomUUID();
+const deadLetterQueues = Object.fromEntries(
+  Object.entries(domains).map(([domain, cfg]) => [domain, new Queue(cfg.dlqName, { connection })])
+) as Record<DomainKey, Queue>;
 
-  await deadLetterQueue.add('dead-lettered-reconciliation', {
-    jobId,
-    failedReason,
-    correlationId,
-    movedAt: new Date().toISOString()
+const queueEvents = Object.fromEntries(
+  Object.entries(domains).map(([domain, cfg]) => [domain, new QueueEvents(cfg.queueName, { connection })])
+) as Record<DomainKey, QueueEvents>;
+
+const stats = Object.fromEntries(
+  (Object.keys(domains) as DomainKey[]).map((domain) => [domain, { processed: 0, failed: 0, retries: 0, deadLettered: 0 }])
+) as Record<DomainKey, DomainRuntimeStats>;
+
+async function callInternal(urlPath: string, body: Record<string, unknown>, correlationId: string): Promise<unknown> {
+  const response = await fetch(`${apiBaseUrl}${urlPath}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${workerToken}`,
+      'x-correlation-id': correlationId
+    },
+    body: JSON.stringify(body)
   });
 
-  console.error({
-    type: 'audit.reconciliation.dead-letter',
-    jobId,
-    failedReason,
-    correlationId
-  });
-});
-
-notificationsQueueEvents.on('failed', async ({ jobId, failedReason }) => {
-  const correlationId = randomUUID();
-  await notificationsDeadLetterQueue.add('dead-lettered-notification', {
-    jobId,
-    failedReason,
-    correlationId,
-    movedAt: new Date().toISOString()
-  });
-
-  const dispatchId = String(jobId ?? '').split(':')[0];
-  if (dispatchId) {
-    await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${dispatchId}/status`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
-      },
-      body: JSON.stringify({
-        status: 'DEAD_LETTERED',
-        error: failedReason,
-        metadata: { jobId }
-      })
-    }).catch(() => null);
+  if (!response.ok) {
+    throw new Error(`${urlPath}-http-${response.status}`);
   }
-});
 
-const worker = new Worker(
-  'payments-reconciliation',
-  async (job) => {
-    const correlationId = (job.data as { correlationId?: string }).correlationId ?? randomUUID();
-    const startedAt = Date.now();
+  return response.json().catch(() => null);
+}
 
-    console.log({
-      type: 'business.event.reconciliation.started',
-      correlationId,
-      jobId: job.id,
-      requestedAt: new Date().toISOString()
-    });
+async function ensureJobIdempotency(domain: DomainKey, payload: JobPayload, jobId: string): Promise<boolean> {
+  const key = payload.jobKey ?? jobId;
+  if (!key) {
+    return true;
+  }
 
-    await Promise.race([
-      new Promise((resolve) => setTimeout(resolve, 150)),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('reconciliation-timeout')), 15_000))
-    ]);
+  const lock = await redis.set(`worker:idempotency:${domain}:${key}`, String(jobId), 'EX', 60 * 60 * 24 * 7, 'NX');
+  return lock === 'OK';
+}
 
-    console.log({
-      type: 'business.event.reconciliation.completed',
-      correlationId,
-      jobId: job.id,
-      latencyMs: Date.now() - startedAt
-    });
-  },
-  { connection, lockDuration: 30_000 }
-);
+async function getQueueLagMs(queue: Queue): Promise<number> {
+  const jobs = await queue.getJobs(['waiting', 'prioritized', 'delayed'], 0, 0, true);
+  const oldest = jobs[0];
+  if (!oldest) {
+    return 0;
+  }
 
-const slotExpirationWorker = new Worker(
-  'slot-hold-expiration',
-  async (job) => {
-    const correlationId = (job.data as { correlationId?: string }).correlationId ?? randomUUID();
-    const lockKey = 'worker:slot-hold-expiration:lock';
-    const lockOwner = `${correlationId}:${job.id}`;
-    const lock = await redis.set(lockKey, lockOwner, 'PX', 55_000, 'NX');
+  return Math.max(0, Date.now() - oldest.timestamp);
+}
 
-    if (lock !== 'OK') {
-      return;
-    }
+function toFailRate(domain: DomainKey): number {
+  const domainStats = stats[domain];
+  const total = domainStats.processed + domainStats.failed;
+  return total === 0 ? 0 : Number((domainStats.failed / total).toFixed(4));
+}
 
-    try {
-      const response = await fetch(`${apiBaseUrl}/scheduling/internal/release-expired-holds?limit=500`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-correlation-id': correlationId
-        }
-      });
+function createDomainWorker(domain: DomainKey, processor: (payload: JobPayload, jobId: string | undefined) => Promise<void>) {
+  const worker = new Worker(
+    domains[domain].queueName,
+    async (job) => {
+      const payload = (job.data ?? {}) as JobPayload;
+      const correlationId = payload.correlationId ?? randomUUID();
 
-      if (!response.ok) {
-        throw new Error(`release-expired-holds-http-${response.status}`);
+      if (!(await ensureJobIdempotency(domain, payload, String(job.id ?? 'unknown-job')))) {
+        console.log({ type: 'worker.idempotency.skipped', domain, jobId: job.id, jobKey: payload.jobKey });
+        return;
       }
 
-      const body = (await response.json()) as { released: number };
-      console.log({
-        type: 'business.event.slot-hold-expiration.completed',
-        correlationId,
-        jobId: job.id,
-        released: body.released
-      });
-    } finally {
-      const script = `
-        if redis.call("get", KEYS[1]) == ARGV[1] then
-          return redis.call("del", KEYS[1])
-        else
-          return 0
-        end
-      `;
-      await redis.eval(script, 1, lockKey, lockOwner);
-    }
-  },
-  { connection, lockDuration: 60_000 }
-);
+      try {
+        await processor({ ...payload, correlationId }, job.id);
+        stats[domain].processed += 1;
+        stats[domain].lastProcessedAt = new Date().toISOString();
+      } catch (error) {
+        stats[domain].failed += 1;
+        stats[domain].lastFailedAt = new Date().toISOString();
+        throw error;
+      }
+    },
+    { connection, lockDuration: 60_000 }
+  );
 
-const notificationsWorker = new Worker(
-  'notifications-dispatch',
-  async (job) => {
-    const payload = job.data as { dispatchId: string; eventId: string; correlationId?: string };
-    const providerRef = `mock-${randomUUID()}`;
-    const correlationId = payload.correlationId ?? randomUUID();
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    if ((job.attemptsMade ?? 0) < 2 && Math.random() < 0.2) {
-      await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${payload.dispatchId}/status`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
-        },
-        body: JSON.stringify({
-          status: 'FAILED',
-          error: 'provider-temporal-error',
-          metadata: { eventId: payload.eventId, correlationId }
-        })
-      });
-      throw new Error('provider-temporal-error');
+  worker.on('failed', (job, error) => {
+    if (job && (job.attemptsMade ?? 0) < (job.opts.attempts ?? defaultJobOptions.attempts ?? 1)) {
+      stats[domain].retries += 1;
     }
 
-    await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${payload.dispatchId}/status`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
-      },
-      body: JSON.stringify({
-        status: 'SENT',
-        providerRef,
-        metadata: { eventId: payload.eventId, correlationId }
-      })
+    console.error({
+      type: `audit.${domain}.failed`,
+      jobId: job?.id,
+      attemptsMade: job?.attemptsMade,
+      error: error.message
+    });
+  });
+
+  return worker;
+}
+
+for (const domain of Object.keys(domains) as DomainKey[]) {
+  queueEvents[domain].on('failed', async ({ jobId, failedReason }) => {
+    const correlationId = randomUUID();
+    stats[domain].deadLettered += 1;
+
+    await deadLetterQueues[domain].add(`dead-lettered-${domain}`, {
+      domain,
+      jobId,
+      failedReason,
+      correlationId,
+      movedAt: new Date().toISOString()
     });
 
-    await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${payload.dispatchId}/status`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
-      },
-      body: JSON.stringify({
-        status: 'DELIVERED',
-        providerRef,
-        metadata: { deliveredAt: new Date().toISOString() }
-      })
-    });
-  },
-  { connection, lockDuration: 30_000 }
-);
+    console.error({ type: `audit.${domain}.dead-letter`, domain, jobId, failedReason, correlationId });
 
-worker.on('failed', (job, error) => {
-  console.error({
-    type: 'audit.reconciliation.failed',
-    jobId: job?.id,
-    attemptsMade: job?.attemptsMade,
-    error: error.message
+    if (domain === 'notifications') {
+      const dispatchId = String(jobId ?? '').split(':')[0];
+      if (dispatchId) {
+        await callInternal(
+          `/notifications/internal/dispatches/${dispatchId}/status`,
+          { status: 'DEAD_LETTERED', error: failedReason, metadata: { jobId, correlationId } },
+          correlationId
+        ).catch(() => null);
+      }
+    }
+  });
+}
+
+const reconciliationWorker = createDomainWorker('payments-reconciliation', async (payload, jobId) => {
+  const correlationId = String(payload.correlationId ?? randomUUID());
+  const result = await callInternal('/payments/internal/reconcile', { limit: 500 }, correlationId);
+
+  console.log({
+    type: 'business.event.reconciliation.completed',
+    correlationId,
+    jobId,
+    result
   });
 });
 
-slotExpirationWorker.on('failed', (job, error) => {
-  console.error({
-    type: 'audit.slot-hold-expiration.failed',
-    jobId: job?.id,
-    attemptsMade: job?.attemptsMade,
-    error: error.message
-  });
-});
+const slotExpirationWorker = createDomainWorker('slot-hold-release', async (payload, jobId) => {
+  const correlationId = String(payload.correlationId ?? randomUUID());
+  const lockKey = 'worker:slot-hold-expiration:lock';
+  const lockOwner = `${correlationId}:${jobId}`;
+  const lock = await redis.set(lockKey, lockOwner, 'PX', 55_000, 'NX');
 
-notificationsWorker.on('failed', async (job, error) => {
-  console.error({
-    type: 'audit.notifications.failed',
-    jobId: job?.id,
-    attemptsMade: job?.attemptsMade,
-    error: error.message
-  });
+  if (lock !== 'OK') {
+    return;
+  }
 
-  const payload = (job?.data ?? {}) as { dispatchId?: string; eventId?: string; correlationId?: string };
-  if (payload.dispatchId) {
-    await fetch(`${apiBaseUrl}/notifications/internal/dispatches/${payload.dispatchId}/status`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${process.env.WORKER_INTERNAL_TOKEN ?? 'worker-internal-token'}`
-      },
-      body: JSON.stringify({
-        status: 'REPROCESSED',
-        error: error.message,
-        metadata: {
-          eventId: payload.eventId,
-          correlationId: payload.correlationId,
-          attemptsMade: job?.attemptsMade
-        }
-      })
-    }).catch(() => null);
+  try {
+    const result = await callInternal('/scheduling/internal/release-expired-holds?limit=500', {}, correlationId);
+    console.log({
+      type: 'business.event.slot-hold-expiration.completed',
+      correlationId,
+      jobId,
+      result
+    });
+  } finally {
+    const script = `
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+      else
+        return 0
+      end
+    `;
+    await redis.eval(script, 1, lockKey, lockOwner);
   }
 });
 
-async function bootstrap() {
-  await reconciliationQueue.add('nightly-reconciliation', { correlationId: randomUUID() }, { repeat: { pattern: '0 3 * * *' } });
-  await slotHoldExpirationQueue.add('release-expired-slot-holds', { correlationId: randomUUID() }, { repeat: { every: 60_000 } });
+const notificationsWorker = createDomainWorker('notifications', async (payload, jobId) => {
+  const dispatchId = String(payload.dispatchId ?? '');
+  const eventId = String(payload.eventId ?? '');
+  const correlationId = String(payload.correlationId ?? randomUUID());
 
-  console.log('Worker bootstrapped with retry/dead-letter/timeout policies');
+  if (!dispatchId) {
+    console.log({ type: 'business.event.notifications.heartbeat', correlationId, jobId });
+    return;
+  }
+
+  const providerRef = `provider-${randomUUID()}`;
+  await callInternal(
+    `/notifications/internal/dispatches/${dispatchId}/status`,
+    { status: 'SENT', providerRef, metadata: { eventId, correlationId, jobId } },
+    correlationId
+  );
+  await callInternal(
+    `/notifications/internal/dispatches/${dispatchId}/status`,
+    { status: 'DELIVERED', providerRef, metadata: { deliveredAt: new Date().toISOString() } },
+    correlationId
+  );
+});
+
+const laboratoryIngestionWorker = createDomainWorker('laboratory-ingestion', async (payload, jobId) => {
+  console.log({
+    type: 'business.event.laboratory-ingestion.completed',
+    correlationId: payload.correlationId,
+    jobId,
+    source: payload.source ?? 'lis-batch'
+  });
+});
+
+const documentsPublicationWorker = createDomainWorker('documents-publication', async (payload, jobId) => {
+  console.log({
+    type: 'business.event.documents-publication.completed',
+    correlationId: payload.correlationId,
+    jobId,
+    documentId: payload.documentId
+  });
+});
+
+const workers = [
+  reconciliationWorker,
+  slotExpirationWorker,
+  notificationsWorker,
+  laboratoryIngestionWorker,
+  documentsPublicationWorker
+];
+
+async function enqueueRecurring(domain: DomainKey, name: string, repeat: JobsOptions['repeat']) {
+  const correlationId = randomUUID();
+  const jobKey = `${domain}:${name}`;
+  await queues[domain].add(name, { correlationId, jobKey }, { jobId: jobKey, repeat });
+}
+
+async function queueHealth() {
+  const snapshot = await Promise.all(
+    (Object.keys(domains) as DomainKey[]).map(async (domain) => {
+      const queue = queues[domain];
+      const counts = await queue.getJobCounts('waiting', 'active', 'failed', 'delayed', 'completed');
+      const lagMs = await getQueueLagMs(queue);
+
+      return {
+        domain,
+        queue: domains[domain].queueName,
+        deadLetterQueue: domains[domain].dlqName,
+        lagMs,
+        retries: stats[domain].retries,
+        failRate: toFailRate(domain),
+        counts,
+        processed: stats[domain].processed,
+        failed: stats[domain].failed,
+        deadLettered: stats[domain].deadLettered,
+        lastProcessedAt: stats[domain].lastProcessedAt,
+        lastFailedAt: stats[domain].lastFailedAt
+      };
+    })
+  );
+
+  return snapshot;
+}
+
+function startOperationalServer() {
+  const server = createServer(async (req, res) => {
+    try {
+      if (req.url === '/healthz') {
+        await redis.ping();
+        const unhealthyWorker = workers.find((worker) => worker.isRunning() === false);
+        const payload = {
+          ok: !unhealthyWorker,
+          redis: 'up',
+          workers: workers.length,
+          checkedAt: new Date().toISOString()
+        };
+        res.statusCode = unhealthyWorker ? 503 : 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(payload));
+        return;
+      }
+
+      if (req.url === '/healthz/queues' || req.url === '/metrics/queues') {
+        const payload = await queueHealth();
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ generatedAt: new Date().toISOString(), queues: payload }));
+        return;
+      }
+
+      res.statusCode = 404;
+      res.end('not-found');
+    } catch (error) {
+      res.statusCode = 500;
+      res.setHeader('content-type', 'application/json');
+      res.end(
+        JSON.stringify({
+          ok: false,
+          error: error instanceof Error ? error.message : 'unknown-error',
+          generatedAt: new Date().toISOString()
+        })
+      );
+    }
+  });
+
+  server.listen(metricsPort, () => {
+    console.log(`Operational endpoints available on :${metricsPort} (/healthz, /healthz/queues, /metrics/queues)`);
+  });
+}
+
+async function bootstrap() {
+  await enqueueRecurring('payments-reconciliation', 'nightly-reconciliation', { pattern: '0 3 * * *' });
+  await enqueueRecurring('slot-hold-release', 'release-expired-slot-holds', { every: 60_000 });
+  await enqueueRecurring('legacy-sync', 'legacy-sync-window', { pattern: '*/15 * * * *' });
+  await enqueueRecurring('laboratory-ingestion', 'laboratory-ingestion-batch', { pattern: '*/10 * * * *' });
+  await enqueueRecurring('documents-publication', 'documents-publication-batch', { pattern: '*/5 * * * *' });
+  await enqueueRecurring('notifications', 'notifications-ops-heartbeat', { pattern: '*/2 * * * *' });
+
+  startOperationalServer();
+  console.log('Worker bootstrapped with domain queues, idempotency, DLQ and operational metrics');
 }
 
 void bootstrap();
