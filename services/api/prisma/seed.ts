@@ -70,6 +70,7 @@ async function main() {
 
   const adminUsers = [
     { email: 'superadmin@demo.local', dni: '39999111', fullName: 'Ana Superadmin', role: 'ADMIN' as const, password: 'admin1234' },
+    { email: 'administrador@demo.local', dni: '39999444', fullName: 'Carla Administradora', role: 'ADMIN' as const, password: 'administrador1234' },
     { email: 'operador@demo.local', dni: '39999222', fullName: 'Luis Operador', role: 'USER' as const, password: 'operador1234' },
     { email: 'auditor@demo.local', dni: '39999333', fullName: 'Alicia Auditora', role: 'AUDITOR' as const, password: 'auditor1234' }
   ];
