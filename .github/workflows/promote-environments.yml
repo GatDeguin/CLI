@@ -1,0 +1,78 @@
+name: Promote Environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: 'Origen (dev|qa)'
+        required: true
+        type: choice
+        options: [dev, qa]
+      to:
+        description: 'Destino (qa|prod)'
+        required: true
+        type: choice
+        options: [qa, prod]
+      version:
+        description: 'Versión a promover (tag o sha)'
+        required: true
+      rollback_version:
+        description: 'Versión previa para rollback (opcional)'
+        required: false
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  validate-promotion:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate transition
+        run: |
+          if [ "${{ inputs.from }}" = "dev" ] && [ "${{ inputs.to }}" = "qa" ]; then
+            exit 0
+          fi
+          if [ "${{ inputs.from }}" = "qa" ] && [ "${{ inputs.to }}" = "prod" ]; then
+            exit 0
+          fi
+          echo "Promoción inválida: ${{ inputs.from }} -> ${{ inputs.to }}"
+          exit 1
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: validate-promotion
+    environment: ${{ inputs.to }}
+    steps:
+      - name: Deploy version
+        run: |
+          echo "Promoviendo versión ${{ inputs.version }} desde ${{ inputs.from }} hacia ${{ inputs.to }}"
+          echo "Aquí se integra helm/terraform/argocd según plataforma real"
+
+  smoke-tests:
+    runs-on: ubuntu-latest
+    needs: deploy
+    environment: ${{ inputs.to }}
+    steps:
+      - name: Run smoke tests
+        env:
+          HEALTHCHECK_URL: ${{ vars.HEALTHCHECK_URL }}
+          ADMIN_WEB_URL: ${{ vars.ADMIN_WEB_URL }}
+        run: |
+          test -n "$HEALTHCHECK_URL" || (echo "HEALTHCHECK_URL no configurada" && exit 1)
+          test -n "$ADMIN_WEB_URL" || (echo "ADMIN_WEB_URL no configurada" && exit 1)
+
+          curl -fsS "$HEALTHCHECK_URL"
+          curl -fsS "$ADMIN_WEB_URL"
+          echo "Smoke tests ejecutados correctamente"
+
+  rollback:
+    runs-on: ubuntu-latest
+    needs: smoke-tests
+    if: failure() && inputs.rollback_version != ''
+    environment: ${{ inputs.to }}
+    steps:
+      - name: Rollback deployment
+        run: |
+          echo "Fallo en smoke tests. Rollback hacia ${{ inputs.rollback_version }}"
+          echo "Ver playbook en docs/devops/deployment-promotion.md"
