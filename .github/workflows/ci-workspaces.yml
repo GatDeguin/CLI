@@ -1,0 +1,113 @@
+name: CI Workspaces
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [services/api, services/worker, apps/admin-web, apps/patient-mobile]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Lint ${{ matrix.workspace }}
+        run: pnpm --filter "./${{ matrix.workspace }}" lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [services/api, services/worker, apps/admin-web, apps/patient-mobile]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Typecheck ${{ matrix.workspace }}
+        run: pnpm --filter "./${{ matrix.workspace }}" typecheck
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [services/api, services/worker, apps/admin-web, apps/patient-mobile]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Unit tests (API)
+        if: matrix.workspace == 'services/api'
+        run: pnpm --filter ./services/api exec tsx --test "src/**/*.spec.ts"
+      - name: Unit tests (sin suite)
+        if: matrix.workspace != 'services/api'
+        run: echo "No hay unit tests configurados para ${{ matrix.workspace }}"
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [services/api, services/worker, apps/admin-web, apps/patient-mobile]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Integration tests (API)
+        if: matrix.workspace == 'services/api'
+        run: pnpm --filter ./services/api exec tsx --test "src/**/*.integration.spec.ts"
+      - name: Integration tests (sin suite)
+        if: matrix.workspace != 'services/api'
+        run: echo "No hay integration tests configurados para ${{ matrix.workspace }}"
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        workspace: [services/api, services/worker, apps/admin-web, apps/patient-mobile]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build ${{ matrix.workspace }}
+        run: pnpm --filter "./${{ matrix.workspace }}" build
