@@ -5,6 +5,7 @@ import { AuditTrailService } from '../observability/audit-trail.service';
 import { BusinessEventsService } from '../observability/business-events.service';
 import { CorrelationIdService } from '../observability/correlation-id.service';
 import { MercadoPagoAdapter } from './mercado-pago.adapter';
+import { MetricsService } from '../observability/metrics.service';
 
 @Injectable()
 export class PaymentsService {
@@ -13,7 +14,8 @@ export class PaymentsService {
     private readonly mercadoPagoAdapter: MercadoPagoAdapter,
     private readonly correlationIdService: CorrelationIdService,
     private readonly auditTrailService: AuditTrailService,
-    private readonly businessEventsService: BusinessEventsService
+    private readonly businessEventsService: BusinessEventsService,
+    private readonly metricsService: MetricsService
   ) {}
 
   async createCheckoutPreference(
@@ -47,6 +49,7 @@ export class PaymentsService {
     const idempotencyKey = this.mercadoPagoAdapter.toIdempotencyKey(payload);
 
     if (!this.mercadoPagoAdapter.validateSignature(payload.id, signature)) {
+      this.metricsService.countRejectedPayment('invalid-signature');
       await this.prisma.paymentEvent.create({
         data: {
           idempotencyKey,
@@ -120,6 +123,10 @@ export class PaymentsService {
         }
       });
 
+      if (!updatedPayment) {
+        this.metricsService.countRejectedPayment('payment-not-found');
+      }
+
       return { accepted: true, reason: updatedPayment ? undefined : 'payment-not-found' };
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
@@ -134,7 +141,7 @@ export class PaymentsService {
     headers: Record<string, string | undefined>,
     limit = 500
   ): Promise<{ scanned: number; updated: number; approved: number; declined: number; refunded: number; pending: number }> {
-    const correlationId = this.correlationIdService.getOrCreate(headers);
+    const correlationId = this.correlationIdService.require(headers);
     const now = new Date();
     const pendingPayments = await this.prisma.payment.findMany({
       where: { status: PaymentStatus.PENDING, providerPaymentId: { not: null } },
