@@ -19,6 +19,12 @@ services:
       MINIO_ENDPOINT: http://minio:9000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       JAEGER_ENDPOINT: http://jaeger:4318
+      LEGACY_API_URL: ${LEGACY_API_URL:-http://legacy:4010}
+      LEGACY_API_KEY: ${LEGACY_API_KEY:-legacy-dev-key}
+      LAB_API_URL: ${LAB_API_URL:-http://laboratory:4012}
+      LAB_API_KEY: ${LAB_API_KEY:-lab-dev-key}
+      RIS_PACS_API_URL: ${RIS_PACS_API_URL:-http://ris-pacs:4013}
+      RIS_PACS_API_KEY: ${RIS_PACS_API_KEY:-rispacs-dev-key}
     volumes:
       - ../../:/app
     depends_on:

@@ -10,7 +10,7 @@ export interface LabOrderInput {
 @Injectable()
 export class LaboratoryAdapter extends BaseIntegrationAdapter {
   constructor() {
-    super('laboratory', process.env.LAB_API_BASE_URL ?? '', process.env.LAB_API_KEY ?? '');
+    super('laboratory', process.env.LAB_API_URL ?? '', process.env.LAB_API_KEY ?? '');
   }
 
   async createOrder(order: LabOrderInput, correlationId: string): Promise<{ orderId: string }> {
