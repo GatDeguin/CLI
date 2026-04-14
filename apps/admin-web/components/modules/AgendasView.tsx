@@ -1,8 +1,8 @@
 'use client';
 
-import { ModulePermission } from '../../lib/admin-types';
+import { ModulePermission, Operator } from '../../lib/admin-types';
 import { ModuleView } from './ModuleView';
 
-export function AgendasView({ module }: { module: ModulePermission }) {
-  return <ModuleView module={module} />;
+export function AgendasView({ module, operator }: { module: ModulePermission; operator: Operator }) {
+  return <ModuleView module={module} operator={operator} />;
 }
