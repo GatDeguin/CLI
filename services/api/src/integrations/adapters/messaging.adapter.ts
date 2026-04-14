@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 export interface OtpMessage {
-  readonly channel: 'sms' | 'whatsapp';
+  readonly channel: 'sms' | 'whatsapp' | 'email';
   readonly destination: string;
   readonly code: string;
 }

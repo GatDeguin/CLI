@@ -25,6 +25,18 @@ export class RequestOtpDto {
   @IsString()
   @IsOptional()
   deviceId?: string;
+
+  @IsString()
+  @IsOptional()
+  ipAddress?: string;
+
+  @IsString()
+  @IsOptional()
+  channel?: 'sms' | 'email';
+
+  @IsString()
+  @IsOptional()
+  destination?: string;
 }
 
 export class LoginDto {
@@ -38,12 +50,24 @@ export class LoginDto {
 
   @IsString()
   deviceId!: string;
+
+  @IsString()
+  @IsOptional()
+  ipAddress?: string;
 }
 
 export class RequestRecoveryDto {
   @IsString()
   @Matches(/^\d{7,10}$/)
   dni!: string;
+
+  @IsString()
+  @IsOptional()
+  deviceId?: string;
+
+  @IsString()
+  @IsOptional()
+  ipAddress?: string;
 }
 
 export class ResetPasswordDto {
