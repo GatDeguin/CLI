@@ -1,5 +1,5 @@
-import { ScreenScaffold } from '../../src/ui/ScreenScaffold';
+import { BusinessScreen } from '../../src/features/navigation/BusinessScreen';
 
 export default function SC26() {
-  return <ScreenScaffold id={'SC-26'} />;
+  return <BusinessScreen id={'SC-26'} />;
 }
