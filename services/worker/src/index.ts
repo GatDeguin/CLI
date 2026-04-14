@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { JobsOptions, Queue, QueueEvents, Worker } from 'bullmq';
 import Redis from 'ioredis';
+import { Counter, Gauge, Registry, collectDefaultMetrics } from 'prom-client';
 
 type DomainKey =
   | 'notifications'
@@ -65,6 +66,39 @@ const stats = Object.fromEntries(
   (Object.keys(domains) as DomainKey[]).map((domain) => [domain, { processed: 0, failed: 0, retries: 0, deadLettered: 0 }])
 ) as Record<DomainKey, DomainRuntimeStats>;
 
+const metricsRegistry = new Registry();
+collectDefaultMetrics({ register: metricsRegistry, prefix: 'hp_worker_' });
+const queueProcessedTotal = new Counter({
+  name: 'hp_worker_queue_processed_total',
+  help: 'Jobs procesados por dominio',
+  labelNames: ['domain'],
+  registers: [metricsRegistry]
+});
+const queueFailedTotal = new Counter({
+  name: 'hp_worker_queue_failed_total',
+  help: 'Jobs fallidos por dominio',
+  labelNames: ['domain'],
+  registers: [metricsRegistry]
+});
+const queueDeadLetteredTotal = new Counter({
+  name: 'hp_worker_queue_dead_lettered_total',
+  help: 'Jobs movidos a DLQ por dominio',
+  labelNames: ['domain'],
+  registers: [metricsRegistry]
+});
+const queueLagMsGauge = new Gauge({
+  name: 'hp_worker_queue_lag_ms',
+  help: 'Lag de cola por dominio en ms',
+  labelNames: ['domain'],
+  registers: [metricsRegistry]
+});
+const expectedEventLastTimestamp = new Gauge({
+  name: 'hp_worker_expected_event_last_timestamp_seconds',
+  help: 'Último evento esperado emitido por dominio (epoch seconds)',
+  labelNames: ['domain'],
+  registers: [metricsRegistry]
+});
+
 async function callInternal(urlPath: string, body: Record<string, unknown>, correlationId: string): Promise<unknown> {
   const response = await fetch(`${apiBaseUrl}${urlPath}`, {
     method: 'POST',
@@ -114,7 +148,11 @@ function createDomainWorker(domain: DomainKey, processor: (payload: JobPayload, 
     domains[domain].queueName,
     async (job) => {
       const payload = (job.data ?? {}) as JobPayload;
-      const correlationId = payload.correlationId ?? randomUUID();
+      const correlationId = payload.correlationId;
+
+      if (!correlationId) {
+        throw new Error(`missing-correlation-id:${domain}:${String(job.id ?? 'unknown-job')}`);
+      }
 
       if (!(await ensureJobIdempotency(domain, payload, String(job.id ?? 'unknown-job')))) {
         console.log({ type: 'worker.idempotency.skipped', domain, jobId: job.id, jobKey: payload.jobKey });
@@ -124,9 +162,11 @@ function createDomainWorker(domain: DomainKey, processor: (payload: JobPayload, 
       try {
         await processor({ ...payload, correlationId }, job.id);
         stats[domain].processed += 1;
+        queueProcessedTotal.inc({ domain });
         stats[domain].lastProcessedAt = new Date().toISOString();
       } catch (error) {
         stats[domain].failed += 1;
+        queueFailedTotal.inc({ domain });
         stats[domain].lastFailedAt = new Date().toISOString();
         throw error;
       }
@@ -154,6 +194,7 @@ for (const domain of Object.keys(domains) as DomainKey[]) {
   queueEvents[domain].on('failed', async ({ jobId, failedReason }) => {
     const correlationId = randomUUID();
     stats[domain].deadLettered += 1;
+    queueDeadLetteredTotal.inc({ domain });
 
     await deadLetterQueues[domain].add(`dead-lettered-${domain}`, {
       domain,
@@ -188,6 +229,7 @@ const reconciliationWorker = createDomainWorker('payments-reconciliation', async
     jobId,
     result
   });
+  reportExpectedEvent('payments-reconciliation');
 });
 
 const slotExpirationWorker = createDomainWorker('slot-hold-release', async (payload, jobId) => {
@@ -208,6 +250,7 @@ const slotExpirationWorker = createDomainWorker('slot-hold-release', async (payl
       jobId,
       result
     });
+    reportExpectedEvent('slot-hold-release');
   } finally {
     const script = `
       if redis.call("get", KEYS[1]) == ARGV[1] then
@@ -227,6 +270,7 @@ const notificationsWorker = createDomainWorker('notifications', async (payload, 
 
   if (!dispatchId) {
     console.log({ type: 'business.event.notifications.heartbeat', correlationId, jobId });
+    reportExpectedEvent('notifications');
     return;
   }
 
@@ -241,6 +285,7 @@ const notificationsWorker = createDomainWorker('notifications', async (payload, 
     { status: 'DELIVERED', providerRef, metadata: { deliveredAt: new Date().toISOString() } },
     correlationId
   );
+  reportExpectedEvent('notifications');
 });
 
 const laboratoryIngestionWorker = createDomainWorker('laboratory-ingestion', async (payload, jobId) => {
@@ -250,6 +295,7 @@ const laboratoryIngestionWorker = createDomainWorker('laboratory-ingestion', asy
     jobId,
     source: payload.source ?? 'lis-batch'
   });
+  reportExpectedEvent('laboratory-ingestion');
 });
 
 const documentsPublicationWorker = createDomainWorker('documents-publication', async (payload, jobId) => {
@@ -259,6 +305,7 @@ const documentsPublicationWorker = createDomainWorker('documents-publication', a
     jobId,
     documentId: payload.documentId
   });
+  reportExpectedEvent('documents-publication');
 });
 
 const workers = [
@@ -281,6 +328,7 @@ async function queueHealth() {
       const queue = queues[domain];
       const counts = await queue.getJobCounts('waiting', 'active', 'failed', 'delayed', 'completed');
       const lagMs = await getQueueLagMs(queue);
+      queueLagMsGauge.set({ domain }, lagMs);
 
       return {
         domain,
@@ -300,6 +348,10 @@ async function queueHealth() {
   );
 
   return snapshot;
+}
+
+function reportExpectedEvent(domain: DomainKey): void {
+  expectedEventLastTimestamp.set({ domain }, Math.floor(Date.now() / 1000));
 }
 
 function startOperationalServer() {
@@ -328,6 +380,14 @@ function startOperationalServer() {
         return;
       }
 
+      if (req.url === '/metrics') {
+        const payload = await metricsRegistry.metrics();
+        res.statusCode = 200;
+        res.setHeader('content-type', 'text/plain; version=0.0.4; charset=utf-8');
+        res.end(payload);
+        return;
+      }
+
       res.statusCode = 404;
       res.end('not-found');
     } catch (error) {
@@ -344,7 +404,7 @@ function startOperationalServer() {
   });
 
   server.listen(metricsPort, () => {
-    console.log(`Operational endpoints available on :${metricsPort} (/healthz, /healthz/queues, /metrics/queues)`);
+    console.log(`Operational endpoints available on :${metricsPort} (/healthz, /healthz/queues, /metrics/queues, /metrics)`);
   });
 }
 

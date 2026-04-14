@@ -15,6 +15,7 @@ import { PatientModule } from './patient/patient.module';
 import { PaymentsModule } from './payments/payments.module';
 import { RulesModule } from './rules/rules.module';
 import { SchedulingModule } from './scheduling/scheduling.module';
+import { ObservabilityModule } from './observability/observability.module';
 
 @Module({
   imports: [
@@ -32,7 +33,8 @@ import { SchedulingModule } from './scheduling/scheduling.module';
     AdminModule,
     AuditModule,
     IntegrationsModule,
-    RulesModule
+    RulesModule,
+    ObservabilityModule
   ],
   controllers: [AppController]
 })

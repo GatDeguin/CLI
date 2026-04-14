@@ -1,0 +1,31 @@
+{
+  "title": "Health Platform - KPIs Operativos",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Lag por cola (ms)",
+      "targets": [{ "expr": "hp_worker_queue_lag_ms", "legendFormat": "{{domain}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Errores de integración",
+      "targets": [{ "expr": "sum by (integration,operation) (rate(hp_api_integration_errors_total[5m]))", "legendFormat": "{{integration}}/{{operation}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Pagos rechazados",
+      "targets": [{ "expr": "sum by (reason) (rate(hp_api_payments_rejected_total[5m]))", "legendFormat": "{{reason}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Latencia endpoints críticos (p95)",
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, route) (rate(hp_api_http_request_duration_seconds_bucket[5m])))", "legendFormat": "{{route}}" }],
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 }
+    }
+  ]
+}
