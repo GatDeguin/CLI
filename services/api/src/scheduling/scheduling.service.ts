@@ -1,4 +1,7 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { AppointmentStatus, PaymentStatus, Prisma } from '@prisma/client';
+import { BadRequestException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { PrismaService } from '../common/prisma/prisma.service';
+import { RedisLockService } from '../common/redis/redis-lock.service';
 import { AuditTrailService } from '../observability/audit-trail.service';
 import { BusinessEventsService } from '../observability/business-events.service';
 import { CorrelationIdService } from '../observability/correlation-id.service';
@@ -8,93 +11,102 @@ const HOLD_MINUTES = Number(process.env.SLOT_HOLD_MINUTES ?? '10');
 
 @Injectable()
 export class SchedulingService {
-  private readonly slots: Slot[] = [
-    {
-      id: 'slot-cardiologia-1',
-      professionalId: 'prof-dr-perez',
-      siteId: 'sede-central',
-      specialtyCode: 'CARD',
-      startsAt: '2026-04-18T14:00:00.000Z',
-      endsAt: '2026-04-18T14:20:00.000Z',
-      requiresPreparation: false,
-      onlineBlocked: false,
-      particularPrice: 25000,
-      copayAmount: 4500
-    },
-    {
-      id: 'slot-imagenes-1',
-      professionalId: 'prof-dr-sosa',
-      siteId: 'sede-norte',
-      specialtyCode: 'IMAG',
-      startsAt: '2026-04-19T16:00:00.000Z',
-      endsAt: '2026-04-19T16:40:00.000Z',
-      requiresPreparation: true,
-      onlineBlocked: true,
-      particularPrice: 80000,
-      copayAmount: 10000
-    }
-  ];
-
-  private readonly holds = new Map<string, SlotHold>();
-  private readonly bookings = new Map<string, { id: string; slotId: string; patientId: string; status: string }>();
-
   constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisLockService: RedisLockService,
     private readonly correlationIdService: CorrelationIdService,
     private readonly auditTrailService: AuditTrailService,
     private readonly businessEventsService: BusinessEventsService
   ) {}
 
-  listAvailableSlots(): Slot[] {
-    const now = Date.now();
-    const reservedSlots = new Set(
-      [...this.holds.values()]
-        .filter((hold) => new Date(hold.expiresAt).getTime() > now)
-        .map((hold) => hold.slotId)
-    );
+  async listAvailableSlots(): Promise<Slot[]> {
+    const now = new Date();
+    const slots = await this.prisma.slot.findMany({
+      where: {
+        isAvailable: true,
+        startsAt: { gte: now },
+        appointment: null,
+        holds: { none: { releasedAt: null, expiresAt: { gt: now } } }
+      },
+      include: {
+        agenda: { include: { professional: true, site: true } }
+      },
+      orderBy: { startsAt: 'asc' }
+    });
 
-    return this.slots.filter((slot) => !reservedSlots.has(slot.id));
+    return slots.map((slot) => ({
+      id: slot.id,
+      professionalId: slot.agenda.professionalId,
+      siteId: slot.agenda.siteId,
+      specialtyCode: slot.agenda.professional.fullName,
+      startsAt: slot.startsAt.toISOString(),
+      endsAt: slot.endsAt.toISOString(),
+      requiresPreparation: false,
+      onlineBlocked: false,
+      particularPrice: 25000,
+      copayAmount: 4500
+    }));
   }
 
-  holdSlot(headers: Record<string, string | undefined>, slotId: string, patientId: string): SlotHold {
-    const slot = this.slots.find((candidate) => candidate.id === slotId);
+  async holdSlot(headers: Record<string, string | undefined>, slotId: string, patientId: string): Promise<SlotHold> {
+    const slot = await this.prisma.slot.findUnique({ where: { id: slotId }, include: { appointment: true } });
 
     if (!slot) {
       throw new NotFoundException('Slot no encontrado.');
     }
 
-    if (slot.onlineBlocked) {
-      throw new BadRequestException('La práctica requiere validación administrativa.');
-    }
-
-    const existingHold = [...this.holds.values()].find((hold) => hold.slotId === slotId && new Date(hold.expiresAt).getTime() > Date.now());
-
-    if (existingHold) {
-      throw new BadRequestException('El slot ya se encuentra retenido temporalmente.');
+    if (slot.appointment) {
+      throw new BadRequestException('El slot ya fue reservado.');
     }
 
     const correlationId = this.correlationIdService.getOrCreate(headers);
-    const expiresAt = new Date(Date.now() + HOLD_MINUTES * 60_000).toISOString();
-    const hold: SlotHold = {
-      holdId: `hold-${slotId}-${patientId}`,
-      slotId,
-      patientId,
-      expiresAt,
-      correlationId
-    };
+    const lockOwner = `${patientId}:${correlationId}`;
+    const lockKey = `lock:slot:${slotId}`;
 
-    this.holds.set(hold.holdId, hold);
-    this.businessEventsService.emit({
-      name: 'slot.retenido',
-      correlationId,
-      occurredAt: new Date().toISOString(),
-      payload: { slotId, patientId, expiresAt }
-    });
+    const locked = await this.redisLockService.acquire(lockKey, lockOwner, 20_000);
+    if (!locked) {
+      throw new ServiceUnavailableException('No se pudo adquirir lock de slot. Reintente.');
+    }
 
-    return hold;
+    try {
+      const expiresAt = new Date(Date.now() + HOLD_MINUTES * 60_000);
+      const hold = await this.prisma.slotHold.create({
+        data: {
+          idempotencyKey: `hold:${slotId}:${patientId}:${Math.floor(Date.now() / (60_000 * HOLD_MINUTES))}`,
+          slotId,
+          patientId,
+          correlationId,
+          expiresAt
+        }
+      });
+
+      this.businessEventsService.emit({
+        name: 'slot.retenido',
+        correlationId,
+        occurredAt: new Date().toISOString(),
+        payload: { slotId, patientId, expiresAt: hold.expiresAt.toISOString() }
+      });
+
+      return {
+        holdId: hold.id,
+        slotId: hold.slotId,
+        patientId: hold.patientId,
+        expiresAt: hold.expiresAt.toISOString(),
+        correlationId: hold.correlationId
+      };
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new BadRequestException('El slot ya se encuentra retenido temporalmente.');
+      }
+
+      throw error;
+    } finally {
+      await this.redisLockService.release(lockKey, lockOwner);
+    }
   }
 
-  evaluatePricing(slotId: string, profile: CoverageProfile): PricingDecision {
-    const slot = this.slots.find((candidate) => candidate.id === slotId);
+  async evaluatePricing(slotId: string, profile: CoverageProfile): Promise<PricingDecision> {
+    const slot = await this.prisma.slot.findUnique({ where: { id: slotId } });
     if (!slot) {
       throw new NotFoundException('Slot no encontrado.');
     }
@@ -102,15 +114,15 @@ export class SchedulingService {
     if (profile === 'PARTICULAR') {
       return {
         showParticularPrice: true,
-        reason: `Precio particular: ARS ${slot.particularPrice.toLocaleString('es-AR')}`
+        reason: 'Precio particular: ARS 25.000'
       };
     }
 
     if (profile === 'COPAY') {
       return {
         showParticularPrice: false,
-        copayAmount: slot.copayAmount,
-        reason: `Copago vigente: ARS ${slot.copayAmount.toLocaleString('es-AR')}`
+        copayAmount: 4500,
+        reason: 'Copago vigente: ARS 4.500'
       };
     }
 
@@ -127,50 +139,98 @@ export class SchedulingService {
     };
   }
 
-  bookAppointment(headers: Record<string, string | undefined>, input: BookingRequest): { bookingId: string; status: string } {
-    const hold = this.holds.get(input.holdId);
-    if (!hold) {
+
+  async releaseExpiredHolds(limit = 100): Promise<{ released: number }> {
+    const now = new Date();
+    const expired = await this.prisma.slotHold.findMany({
+      where: { releasedAt: null, expiresAt: { lte: now } },
+      take: limit,
+      orderBy: { expiresAt: 'asc' }
+    });
+
+    if (expired.length === 0) {
+      return { released: 0 };
+    }
+
+    await this.prisma.slotHold.updateMany({
+      where: { id: { in: expired.map((item) => item.id) } },
+      data: { releasedAt: now, releaseReason: 'expired-worker' }
+    });
+
+    return { released: expired.length };
+  }
+
+  async bookAppointment(headers: Record<string, string | undefined>, input: BookingRequest): Promise<{ bookingId: string; status: string }> {
+    const hold = await this.prisma.slotHold.findUnique({ where: { id: input.holdId } });
+    if (!hold || hold.releasedAt) {
       throw new NotFoundException('Retención no encontrada.');
     }
 
-    if (new Date(hold.expiresAt).getTime() <= Date.now()) {
-      this.holds.delete(input.holdId);
+    if (hold.patientId !== input.patientId) {
+      throw new BadRequestException('El paciente no coincide con la retención.');
+    }
+
+    if (hold.expiresAt.getTime() <= Date.now()) {
+      await this.prisma.slotHold.update({
+        where: { id: hold.id },
+        data: { releasedAt: new Date(), releaseReason: 'expired-before-booking' }
+      });
       throw new BadRequestException('La retención del slot expiró.');
     }
 
-    const pricing = this.evaluatePricing(hold.slotId, input.profile);
+    const pricing = await this.evaluatePricing(hold.slotId, input.profile);
 
     if (pricing.showParticularPrice && !input.acceptsEconomicPolicy) {
       throw new BadRequestException('Debe aceptar la política económica para pacientes particulares.');
     }
 
     const correlationId = this.correlationIdService.getOrCreate(headers);
-    const bookingId = `apt-${hold.slotId}-${hold.patientId}`;
+    const paymentRequired = input.profile === 'PARTICULAR' || input.profile === 'COPAY';
+    const booking = await this.prisma.$transaction(async (tx) => {
+      const appointment = await tx.appointment.create({
+        data: {
+          patientId: hold.patientId,
+          slotId: hold.slotId,
+          status: paymentRequired ? AppointmentStatus.REQUESTED : AppointmentStatus.CONFIRMED
+        }
+      });
 
-    this.bookings.set(bookingId, {
-      id: bookingId,
-      slotId: hold.slotId,
-      patientId: hold.patientId,
-      status: input.profile === 'PARTICULAR' || input.profile === 'COPAY' ? 'PENDIENTE_PAGO' : 'CONFIRMADO'
+      if (paymentRequired) {
+        await tx.payment.create({
+          data: {
+            patientId: hold.patientId,
+            appointmentId: appointment.id,
+            amount: new Prisma.Decimal(pricing.copayAmount ?? 25_000),
+            status: PaymentStatus.PENDING,
+            externalReference: appointment.id
+          }
+        });
+      }
+
+      await tx.slotHold.update({
+        where: { id: hold.id },
+        data: { releasedAt: new Date(), releaseReason: 'booked' }
+      });
+
+      return appointment;
     });
-    this.holds.delete(input.holdId);
 
     this.auditTrailService.record({
       actorId: hold.patientId,
       action: 'appointment-booked',
       resource: 'appointment',
-      resourceId: bookingId,
+      resourceId: booking.id,
       correlationId,
-      metadata: { profile: input.profile, pricing }
+      metadata: { profile: input.profile, pricing, paymentRequired }
     });
 
     this.businessEventsService.emit({
       name: 'turno.reservado',
       correlationId,
       occurredAt: new Date().toISOString(),
-      payload: { bookingId, slotId: hold.slotId, status: this.bookings.get(bookingId)?.status }
+      payload: { bookingId: booking.id, slotId: hold.slotId, status: booking.status }
     });
 
-    return { bookingId, status: this.bookings.get(bookingId)?.status ?? 'PENDIENTE' };
+    return { bookingId: booking.id, status: booking.status };
   }
 }

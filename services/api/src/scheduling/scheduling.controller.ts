@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, Param, Post } from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common';
 import { SchedulingService } from './scheduling.service';
 import { BookingRequest, CoverageProfile } from './scheduling.types';
 
@@ -28,5 +28,10 @@ export class SchedulingController {
   @Post('bookings')
   book(@Headers() headers: Record<string, string | undefined>, @Body() body: BookingRequest) {
     return this.schedulingService.bookAppointment(headers, body);
+  }
+
+  @Post('internal/release-expired-holds')
+  releaseExpiredHolds(@Query('limit') limit?: string) {
+    return this.schedulingService.releaseExpiredHolds(limit ? Number(limit) : undefined);
   }
 }
