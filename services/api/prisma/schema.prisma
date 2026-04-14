@@ -107,6 +107,7 @@ model AppUser {
   familyPermissions        FamilyPermission[]    @relation("FamilyPermissionTutor")
   documentVersions         DocumentVersion[]     @relation("DocumentVersionCreatedBy")
   documentAccessAudits     DocumentAccessAudit[] @relation("DocumentAccessedBy")
+  documentSignedUrlTokens  DocumentSignedUrlToken[] @relation("DocumentSignedUrlRequestedBy")
 
   @@index([role])
 }
@@ -181,6 +182,7 @@ model Patient {
   notificationDispatches NotificationDispatch[]
   familyPermissions    FamilyPermission[]
   documentAccessAudits DocumentAccessAudit[]
+  signedUrlTokens      DocumentSignedUrlToken[]
 
   @@index([userId])
   @@index([dependentOfUserId])
@@ -350,6 +352,7 @@ model Document {
   patient       Patient               @relation(fields: [patientId], references: [id])
   versions      DocumentVersion[]
   accessAudits  DocumentAccessAudit[]
+  signedUrlTokens DocumentSignedUrlToken[]
 
   @@index([patientId, type])
 }
@@ -538,8 +541,13 @@ model DocumentVersion {
   documentId      String
   versionNumber   Int
   storageUrl      String
+  previewUrl      String?
+  thumbnailUrl    String?
   checksumSha256  String
   mimeType        String
+  status          String                @default("ACTIVE")
+  replacementNote String?
+  replacedByUserId String?
   validFrom       DateTime
   validTo         DateTime?
   createdByUserId String?
@@ -547,9 +555,34 @@ model DocumentVersion {
   document        Document              @relation(fields: [documentId], references: [id])
   createdBy       AppUser?              @relation("DocumentVersionCreatedBy", fields: [createdByUserId], references: [id])
   accessAudits    DocumentAccessAudit[]
+  signedUrlTokens DocumentSignedUrlToken[]
 
   @@unique([documentId, versionNumber])
   @@index([documentId, validFrom, validTo])
+}
+
+model DocumentSignedUrlToken {
+  id                String   @id @default(cuid())
+  documentId        String
+  documentVersionId String
+  patientId         String
+  requestedByUserId String
+  action            String
+  token             String   @unique
+  signedUrl         String
+  expiresAt         DateTime
+  revokedAt         DateTime?
+  revokeReason      String?
+  createdAt         DateTime @default(now())
+  document          Document            @relation(fields: [documentId], references: [id])
+  documentVersion   DocumentVersion     @relation(fields: [documentVersionId], references: [id])
+  patient           Patient             @relation(fields: [patientId], references: [id])
+  requestedBy       AppUser             @relation("DocumentSignedUrlRequestedBy", fields: [requestedByUserId], references: [id])
+
+  @@index([documentId, createdAt])
+  @@index([documentVersionId, createdAt])
+  @@index([requestedByUserId, createdAt])
+  @@index([expiresAt, revokedAt])
 }
 
 model DocumentAccessAudit {
