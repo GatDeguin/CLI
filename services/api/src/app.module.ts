@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { AdminModule } from './admin/admin.module';
+import { AppController } from './app.controller';
 import { AuditModule } from './audit/audit.module';
+import { AuthModule } from './common/auth/auth.module';
+import { PrismaModule } from './common/prisma/prisma.module';
 import { CoverageModule } from './coverage/coverage.module';
 import { DirectoryModule } from './directory/directory.module';
 import { DocumentsModule } from './documents/documents.module';
@@ -14,6 +17,8 @@ import { SchedulingModule } from './scheduling/scheduling.module';
 
 @Module({
   imports: [
+    PrismaModule,
+    AuthModule,
     IdentityModule,
     PatientModule,
     CoverageModule,
@@ -26,6 +31,7 @@ import { SchedulingModule } from './scheduling/scheduling.module';
     AuditModule,
     IntegrationsModule,
     RulesModule
-  ]
+  ],
+  controllers: [AppController]
 })
 export class AppModule {}
