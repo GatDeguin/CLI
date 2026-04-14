@@ -54,7 +54,7 @@ export function ScreenScaffold({ id }: Props) {
           <TextInput style={styles.input} placeholder="password" secureTextEntry value={form.watch('password')} onChangeText={(value) => form.setValue('password', value)} />
           <Pressable style={styles.button} onPress={() => registerMutation.mutate({ email: 'demo@app.com', dni: '30111222', password: 'demopass' })}><Text style={styles.buttonText}>Registrar</Text></Pressable>
           <Pressable style={styles.button} onPress={() => otpMutation.mutate({ userId: 'demo-user', otp: '123456' })}><Text style={styles.buttonText}>Validar OTP</Text></Pressable>
-          <Pressable style={styles.button} onPress={form.handleSubmit((values) => loginMutation.mutate({ ...values, deviceId: 'device-mobile' }))}><Text style={styles.buttonText}>Iniciar sesión</Text></Pressable>
+          <Pressable style={styles.button} onPress={form.handleSubmit((values) => loginMutation.mutate({ ...values, deviceId: session.deviceId }))}><Text style={styles.buttonText}>Iniciar sesión</Text></Pressable>
           {id === 'SC-31' && <Pressable style={styles.buttonSecondary} onPress={() => logoutDeviceMutation.mutate({ deviceId: 'device-mobile' })}><Text>Cerrar dispositivo</Text></Pressable>}
         </View>
       )}
