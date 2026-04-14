@@ -23,20 +23,20 @@ export class IdentityController {
 
   @Public()
   @Post('otp/request')
-  requestOtp(@Body() dto: RequestOtpDto) {
-    return this.service.requestOtp(dto);
+  requestOtp(@Req() req: { ip?: string }, @Body() dto: RequestOtpDto) {
+    return this.service.requestOtp({ ...dto, ipAddress: dto.ipAddress ?? req.ip });
   }
 
   @Public()
   @Post('login')
-  login(@Body() dto: LoginDto) {
-    return this.service.login(dto);
+  login(@Req() req: { ip?: string }, @Body() dto: LoginDto) {
+    return this.service.login({ ...dto, ipAddress: dto.ipAddress ?? req.ip });
   }
 
   @Public()
   @Post('access/recovery/request')
-  requestRecovery(@Body() dto: RequestRecoveryDto) {
-    return this.service.requestRecovery(dto);
+  requestRecovery(@Req() req: { ip?: string }, @Body() dto: RequestRecoveryDto) {
+    return this.service.requestRecovery({ ...dto, ipAddress: dto.ipAddress ?? req.ip });
   }
 
   @Public()
