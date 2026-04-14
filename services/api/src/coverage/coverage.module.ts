@@ -1,4 +1,7 @@
 import { Module } from '@nestjs/common';
+import { CoverageController } from './coverage.controller';
+import { CoverageRepository } from './coverage.repository';
+import { CoverageService } from './coverage.service';
 
-@Module({})
+@Module({ controllers: [CoverageController], providers: [CoverageService, CoverageRepository], exports: [CoverageService] })
 export class CoverageModule {}
