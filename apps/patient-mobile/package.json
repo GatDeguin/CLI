@@ -1,0 +1,22 @@
+{
+  "name": "@apps/patient-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "expo start",
+    "build": "echo 'Expo build handled by EAS'",
+    "lint": "eslint .",
+    "test": "echo 'No tests configured yet'",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "expo": "~51.0.0",
+    "react": "18.2.0",
+    "react-native": "0.74.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/react": "^18.2.0",
+    "@types/react-native": "^0.73.0"
+  }
+}
