@@ -1,0 +1,142 @@
+version: '3.9'
+
+name: health-platform
+
+services:
+  api:
+    image: node:22-alpine
+    container_name: hp-api
+    working_dir: /app
+    command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @services/api dev"
+    ports:
+      - '${API_PORT:-3000}:3000'
+    env_file:
+      - ../../.env
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-health_platform}
+      REDIS_URL: redis://redis:6379
+      MINIO_ENDPOINT: http://minio:9000
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      JAEGER_ENDPOINT: http://jaeger:4318
+    volumes:
+      - ../../:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  worker:
+    image: node:22-alpine
+    container_name: hp-worker
+    working_dir: /app
+    command: sh -c "corepack enable && pnpm install --frozen-lockfile && pnpm --filter @services/worker dev"
+    env_file:
+      - ../../.env
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      REDIS_URL: redis://redis:6379
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    volumes:
+      - ../../:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-health_platform}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-postgres}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hp-redis
+    command: redis-server --appendonly yes
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  minio:
+    image: minio/minio:RELEASE.2026-03-14T20-01-00Z
+    container_name: hp-minio
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - '${MINIO_API_PORT:-9000}:9000'
+      - '${MINIO_CONSOLE_PORT:-9001}:9001'
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.121.0
+    container_name: hp-otel-collector
+    command: ['--config=/etc/otel-collector-config.yaml']
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - '4317:4317'
+      - '4318:4318'
+      - '8889:8889'
+    depends_on:
+      - jaeger
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    container_name: hp-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - '9090:9090'
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: hp-grafana
+    ports:
+      - '3001:3000'
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+  jaeger:
+    image: jaegertracing/jaeger:2.4.0
+    container_name: hp-jaeger
+    ports:
+      - '16686:16686'
+      - '4319:4317'
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  grafana_data:
