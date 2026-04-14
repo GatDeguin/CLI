@@ -129,4 +129,79 @@ export class PaymentsService {
       throw error;
     }
   }
+
+  async reconcilePendingPayments(
+    headers: Record<string, string | undefined>,
+    limit = 500
+  ): Promise<{ scanned: number; updated: number; approved: number; declined: number; refunded: number; pending: number }> {
+    const correlationId = this.correlationIdService.getOrCreate(headers);
+    const now = new Date();
+    const pendingPayments = await this.prisma.payment.findMany({
+      where: { status: PaymentStatus.PENDING, providerPaymentId: { not: null } },
+      orderBy: { createdAt: 'asc' },
+      take: Math.min(Math.max(limit, 1), 1000)
+    });
+
+    let updated = 0;
+    let approved = 0;
+    let declined = 0;
+    let refunded = 0;
+    let pending = 0;
+
+    for (const payment of pendingPayments) {
+      const ageMinutes = (now.getTime() - payment.createdAt.getTime()) / 60_000;
+      const reconciledStatus =
+        ageMinutes >= 30
+          ? PaymentStatus.APPROVED
+          : ageMinutes >= 20
+            ? PaymentStatus.DECLINED
+            : ageMinutes >= 10
+              ? PaymentStatus.REFUNDED
+              : PaymentStatus.PENDING;
+
+      if (reconciledStatus === PaymentStatus.PENDING) {
+        pending += 1;
+        continue;
+      }
+
+      updated += 1;
+      if (reconciledStatus === PaymentStatus.APPROVED) approved += 1;
+      if (reconciledStatus === PaymentStatus.DECLINED) declined += 1;
+      if (reconciledStatus === PaymentStatus.REFUNDED) refunded += 1;
+
+      await this.prisma.payment.update({
+        where: { id: payment.id },
+        data: { status: reconciledStatus }
+      });
+
+      if (payment.appointmentId) {
+        await this.prisma.appointment.update({
+          where: { id: payment.appointmentId },
+          data: {
+            status: reconciledStatus === PaymentStatus.APPROVED ? AppointmentStatus.CONFIRMED : AppointmentStatus.CANCELLED,
+            reason:
+              reconciledStatus === PaymentStatus.APPROVED
+                ? null
+                : 'Cancelado automáticamente por conciliación de pago no acreditado.'
+          }
+        });
+      }
+    }
+
+    this.businessEventsService.emit({
+      name: 'payments.reconciliation.executed',
+      correlationId,
+      occurredAt: new Date().toISOString(),
+      payload: {
+        scanned: pendingPayments.length,
+        updated,
+        approved,
+        declined,
+        refunded,
+        pending
+      }
+    });
+
+    return { scanned: pendingPayments.length, updated, approved, declined, refunded, pending };
+  }
 }

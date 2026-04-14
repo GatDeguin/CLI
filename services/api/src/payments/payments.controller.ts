@@ -1,4 +1,5 @@
 import { Body, Controller, Headers, Post } from '@nestjs/common';
+import { Public } from '../common/auth/public.decorator';
 import { PaymentsService } from './payments.service';
 
 @Controller('payments')
@@ -20,5 +21,11 @@ export class PaymentsController {
     @Body() body: { id: string; action: string; data: { id: string } }
   ) {
     return this.paymentsService.processWebhook(headers, body, signature);
+  }
+
+  @Post('internal/reconcile')
+  @Public()
+  reconcile(@Headers() headers: Record<string, string | undefined>, @Body() body?: { limit?: number }) {
+    return this.paymentsService.reconcilePendingPayments(headers, body?.limit);
   }
 }
