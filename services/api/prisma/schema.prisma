@@ -1,0 +1,239 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProfileType {
+  PARTICULAR
+  TOTAL_COVERAGE
+  COPAY
+  PENDING_COVERAGE
+  TUTOR_DEPENDENT
+}
+
+enum CoverageStatus {
+  ACTIVE
+  PENDING
+  EXPIRED
+  SUSPENDED
+}
+
+enum AppointmentStatus {
+  REQUESTED
+  CONFIRMED
+  CANCELLED
+  RESCHEDULED
+  COMPLETED
+  NO_SHOW
+}
+
+enum PaymentStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  REFUNDED
+}
+
+enum NotificationChannel {
+  PUSH
+  EMAIL
+  SMS
+  WHATSAPP
+}
+
+enum NotificationStatus {
+  QUEUED
+  SENT
+  FAILED
+  READ
+}
+
+model AppUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  dni          String    @unique
+  fullName     String
+  profile      ProfileType
+  isTutor      Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  patientLinks Patient[] @relation("UserPatients")
+  dependents   Patient[] @relation("Dependents")
+  auditLogs    AuditLog[]
+}
+
+model Patient {
+  id                 String          @id @default(cuid())
+  userId             String
+  dependentOfUserId  String?
+  dni                String          @unique
+  fullName           String
+  birthDate          DateTime
+  phone              String?
+  email              String?
+  activeCoverageId   String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  user               AppUser         @relation("UserPatients", fields: [userId], references: [id])
+  dependentOf        AppUser?        @relation("Dependents", fields: [dependentOfUserId], references: [id])
+  coverages          Coverage[]
+  appointments       Appointment[]
+  payments           Payment[]
+  documents          Document[]
+  notifications      Notification[]
+
+  @@index([userId])
+  @@index([dependentOfUserId])
+}
+
+model CoveragePlan {
+  id            String     @id @default(cuid())
+  code          String     @unique
+  name          String
+  includesCopay Boolean    @default(false)
+  validFrom     DateTime
+  validTo       DateTime?
+  coverages     Coverage[]
+
+  @@index([validFrom, validTo])
+}
+
+model Coverage {
+  id             String         @id @default(cuid())
+  patientId      String
+  planId         String
+  memberNumber   String
+  status         CoverageStatus
+  validFrom      DateTime
+  validTo        DateTime?
+  createdAt      DateTime       @default(now())
+  patient        Patient        @relation(fields: [patientId], references: [id])
+  plan           CoveragePlan   @relation(fields: [planId], references: [id])
+
+  @@unique([patientId, planId, memberNumber])
+  @@index([patientId, status])
+  @@index([validFrom, validTo])
+}
+
+model Specialty {
+  id            String         @id @default(cuid())
+  code          String         @unique
+  name          String
+  professionals Professional[] @relation("ProfessionalSpecialties")
+}
+
+model Professional {
+  id            String         @id @default(cuid())
+  licenseNumber String         @unique
+  fullName      String
+  specialities  Specialty[]    @relation("ProfessionalSpecialties")
+  agendas       Agenda[]
+}
+
+model Site {
+  id           String   @id @default(cuid())
+  code         String   @unique
+  name         String
+  address      String
+  agendas      Agenda[]
+}
+
+model Agenda {
+  id             String      @id @default(cuid())
+  professionalId String
+  siteId         String
+  validFrom      DateTime
+  validTo        DateTime?
+  professional   Professional @relation(fields: [professionalId], references: [id])
+  site           Site         @relation(fields: [siteId], references: [id])
+  slots          Slot[]
+
+  @@index([professionalId, siteId])
+  @@index([validFrom, validTo])
+}
+
+model Slot {
+  id          String        @id @default(cuid())
+  agendaId    String
+  startsAt    DateTime
+  endsAt      DateTime
+  isAvailable Boolean       @default(true)
+  agenda      Agenda        @relation(fields: [agendaId], references: [id])
+  appointment Appointment?
+
+  @@unique([agendaId, startsAt])
+  @@index([startsAt, endsAt])
+}
+
+model Appointment {
+  id           String            @id @default(cuid())
+  patientId    String
+  slotId       String            @unique
+  status       AppointmentStatus
+  reason       String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  patient      Patient           @relation(fields: [patientId], references: [id])
+  slot         Slot              @relation(fields: [slotId], references: [id])
+
+  @@index([patientId, status])
+}
+
+model Payment {
+  id              String       @id @default(cuid())
+  patientId       String
+  appointmentId   String?
+  amount          Decimal      @db.Decimal(10, 2)
+  currency        String       @default("ARS")
+  status          PaymentStatus
+  createdAt       DateTime     @default(now())
+  patient         Patient      @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, status])
+}
+
+model Document {
+  id             String      @id @default(cuid())
+  patientId      String
+  appointmentId  String?
+  type           String
+  url            String
+  publishedAt    DateTime?
+  createdAt      DateTime    @default(now())
+  patient        Patient     @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, type])
+}
+
+model Notification {
+  id          String              @id @default(cuid())
+  patientId   String
+  channel     NotificationChannel
+  status      NotificationStatus
+  title       String
+  body        String
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  createdAt   DateTime            @default(now())
+  patient     Patient             @relation(fields: [patientId], references: [id])
+
+  @@index([patientId, status])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId       String
+  action      String
+  entity      String
+  entityId    String
+  payload     Json?
+  createdAt   DateTime @default(now())
+  user        AppUser  @relation(fields: [userId], references: [id])
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+}
