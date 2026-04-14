@@ -30,6 +30,11 @@ pnpm --filter @services/api prisma:seed
 pnpm dev
 ```
 
+### Usuarios QA (seed)
+
+- Administrador: `administrador@demo.local` / `administrador1234`
+- Operador: `operador@demo.local` / `operador1234`
+
 ## Variables de entorno
 
 Copiar `.env.example` y completar:
