@@ -2,7 +2,7 @@ import { AdminRecord, HistoryEvent, InterventionAction, ModuleKey, Operator, Rec
 import { historyByRecord, recordsByModule } from './mock-admin-data';
 
 const normalizeBaseUrl = (value: string) => value.trim().replace(/\/$/, '');
-const PUBLIC_API_BASE_URL = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:3000');
+const PUBLIC_API_BASE_URL = normalizeBaseUrl(process.env.NEXT_PUBLIC_API_BASE_URL ?? '');
 const MOCK_FLAG = (process.env.NEXT_PUBLIC_ENABLE_ADMIN_MOCK ?? 'false').toLowerCase() === 'true';
 const canUseMock = () => MOCK_FLAG && process.env.NODE_ENV === 'development';
 
@@ -13,7 +13,22 @@ let currentOperator: Operator | null = null;
 const ensureBrowser = () => typeof window !== 'undefined';
 const hasModule = (value: string): value is ModuleKey => value in recordsByModule;
 
-const buildApiUrl = (path: string) => `${PUBLIC_API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+const getApiBaseUrl = () => {
+  if (PUBLIC_API_BASE_URL) {
+    return PUBLIC_API_BASE_URL;
+  }
+  if (ensureBrowser()) {
+    return normalizeBaseUrl(window.location.origin);
+  }
+  return 'http://localhost:3000';
+};
+
+const buildApiUrl = (path: string) => `${getApiBaseUrl()}${path.startsWith('/') ? path : `/${path}`}`;
+
+const getNetworkError = () =>
+  new Error(
+    `No se pudo conectar con la API admin (${getApiBaseUrl()}). Configura NEXT_PUBLIC_API_BASE_URL con la URL correcta del backend.`
+  );
 
 const parseError = async (response: Response) => {
   try {
@@ -25,14 +40,19 @@ const parseError = async (response: Response) => {
 };
 
 const fetchJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
-  const response = await fetch(buildApiUrl(path), {
-    ...init,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {})
-    }
-  });
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl(path), {
+      ...init,
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(init?.headers ?? {})
+      }
+    });
+  } catch {
+    throw getNetworkError();
+  }
 
   if (!response.ok) {
     throw new Error(await parseError(response));
@@ -79,15 +99,20 @@ const ensureAccessToken = async () => {
 
 const fetchApi = async <T>(path: string, init?: RequestInit, retry = true): Promise<T> => {
   const token = await ensureAccessToken();
-  const response = await fetch(buildApiUrl(path), {
-    ...init,
-    credentials: 'include',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init?.headers ?? {})
-    }
-  });
+  let response: Response;
+  try {
+    response = await fetch(buildApiUrl(path), {
+      ...init,
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init?.headers ?? {})
+      }
+    });
+  } catch {
+    throw getNetworkError();
+  }
 
   if (response.status === 401 && retry) {
     const refreshed = await refreshSession();
