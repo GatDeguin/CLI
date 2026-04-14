@@ -1,4 +1,4 @@
-# Clínica Privada del Buen Pastor — Plataforma Digital Integral
+# Clínica — Plataforma Digital Integral
 
 Monorepo TypeScript con app móvil de pacientes, panel administrativo, API de dominios clínico-operativos, workers de integración y documentación funcional/técnica.
 
