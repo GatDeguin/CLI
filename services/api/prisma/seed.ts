@@ -218,8 +218,11 @@ async function main() {
       },
       update: {
         storageUrl: `s3://demo-bucket/documents/${person.dni}/resultado-v1.pdf`,
+        previewUrl: `s3://demo-bucket/previews/${person.dni}/resultado-v1.jpg`,
+        thumbnailUrl: `s3://demo-bucket/thumbnails/${person.dni}/resultado-v1.jpg`,
         checksumSha256: `sha256-${person.dni}-v1`,
         mimeType: 'application/pdf',
+        status: 'ACTIVE',
         validFrom: new Date('2026-02-10T14:00:00Z'),
         validTo: null,
         createdByUserId: user.id
@@ -228,8 +231,11 @@ async function main() {
         documentId: document.id,
         versionNumber: 1,
         storageUrl: `s3://demo-bucket/documents/${person.dni}/resultado-v1.pdf`,
+        previewUrl: `s3://demo-bucket/previews/${person.dni}/resultado-v1.jpg`,
+        thumbnailUrl: `s3://demo-bucket/thumbnails/${person.dni}/resultado-v1.jpg`,
         checksumSha256: `sha256-${person.dni}-v1`,
         mimeType: 'application/pdf',
+        status: 'ACTIVE',
         validFrom: new Date('2026-02-10T14:00:00Z'),
         createdByUserId: user.id
       }
