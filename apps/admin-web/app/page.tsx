@@ -23,26 +23,30 @@ const labels: Record<ModuleKey, string> = {
 };
 
 function Login({ onLogged }: { onLogged: (operator: Operator) => void }) {
-  const [username, setUsername] = useState('superadmin');
-  const [password, setPassword] = useState('admin123');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
 
   return (
     <section style={{ maxWidth: 420, margin: '64px auto', background: '#fff', border: '1px solid #dbe3f4', borderRadius: 12, padding: 16 }}>
       <h1>Ingreso de operadores</h1>
-      <p>Usuarios demo: superadmin/admin123 u operador/operador123</p>
+      <p>Autenticación contra API con JWT y refresh seguro por cookie HttpOnly.</p>
       <div style={{ display: 'grid', gap: 8 }}>
         <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Usuario" />
         <input value={password} type="password" onChange={(e) => setPassword(e.target.value)} placeholder="Contraseña" />
         <button
-          onClick={() => {
+          onClick={async () => {
             setError('');
-            const operator = login(username, password);
-            if (!operator) {
-              setError('Credenciales inválidas');
-              return;
+            try {
+              const operator = await login(username, password);
+              if (!operator) {
+                setError('Credenciales inválidas');
+                return;
+              }
+              onLogged(operator);
+            } catch (err) {
+              setError(err instanceof Error ? err.message : 'Error de autenticación');
             }
-            onLogged(operator);
           }}
         >
           Iniciar sesión
@@ -80,10 +84,15 @@ export default function HomePage() {
   const [activeModule, setActiveModule] = useState<ModuleKey | null>(null);
 
   useEffect(() => {
-    const currentOperator = getCurrentOperator();
-    if (currentOperator) {
-      setOperator(currentOperator);
-    }
+    let mounted = true;
+    getCurrentOperator().then((currentOperator) => {
+      if (mounted && currentOperator) {
+        setOperator(currentOperator);
+      }
+    });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -108,8 +117,8 @@ export default function HomePage() {
         <h1 style={{ margin: 0 }}>Admin Web · RF-064 a RF-077</h1>
         <p>Operador: <strong>{operator.name}</strong> ({operator.role})</p>
         <button
-          onClick={() => {
-            logout();
+          onClick={async () => {
+            await logout();
             setOperator(null);
             setActiveModule(null);
           }}

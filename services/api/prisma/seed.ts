@@ -7,10 +7,18 @@ import {
   ProfileType,
   WebhookProcessingStatus
 } from '@prisma/client';
+import { pbkdf2Sync, randomBytes } from 'node:crypto';
 
 const prisma = new PrismaClient();
 
 const VALID_FROM = new Date('2026-01-01T00:00:00Z');
+
+
+const hashPassword = (password: string): string => {
+  const salt = randomBytes(16).toString('hex');
+  const hash = pbkdf2Sync(password, salt, 10_000, 64, 'sha512').toString('hex');
+  return `${salt}:${hash}`;
+};
 
 async function main() {
   const plans = await prisma.$transaction([
@@ -58,6 +66,38 @@ async function main() {
       create: { code: 'PED', name: 'Pediatría' }
     })
   ]);
+
+
+  const adminUsers = [
+    { email: 'superadmin@demo.local', dni: '39999111', fullName: 'Ana Superadmin', role: 'ADMIN' as const, password: 'admin1234' },
+    { email: 'operador@demo.local', dni: '39999222', fullName: 'Luis Operador', role: 'USER' as const, password: 'operador1234' },
+    { email: 'auditor@demo.local', dni: '39999333', fullName: 'Alicia Auditora', role: 'AUDITOR' as const, password: 'auditor1234' }
+  ];
+
+  for (const admin of adminUsers) {
+    const user = await prisma.appUser.upsert({
+      where: { email: admin.email },
+      update: {
+        dni: admin.dni,
+        fullName: admin.fullName,
+        role: admin.role,
+        profile: ProfileType.PARTICULAR
+      },
+      create: {
+        email: admin.email,
+        dni: admin.dni,
+        fullName: admin.fullName,
+        role: admin.role,
+        profile: ProfileType.PARTICULAR
+      }
+    });
+
+    await prisma.authCredential.upsert({
+      where: { userId: user.id },
+      update: { passwordHash: hashPassword(admin.password), passwordUpdated: new Date() },
+      create: { userId: user.id, passwordHash: hashPassword(admin.password) }
+    });
+  }
 
   const profiles = [
     { profile: ProfileType.PARTICULAR, dni: '30111222', fullName: 'Sofía Particular', email: 'particular@demo.local' },
