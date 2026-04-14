@@ -1,23 +1,29 @@
 import { zodResolver } from '@hookform/resolvers/zod';
+import { useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { Text } from 'react-native';
 import { ScreenId, byId } from '../../config/screens';
 import { Card, FeatureScreen, FieldLabel, Input, NextStep, PrimaryButton, StateBlock } from '../shared/ui';
 import { LoginFormValues, OtpFormValues, RegisterFormValues, loginSchema, otpSchema, registerSchema } from './forms';
 import { authErrorToMessage } from './errors';
-import { useDevices, useLogin, useLogoutDevice, useRegister, useVerifyOtp } from './hooks';
+import { useActiveSessions, useDevices, useLogin, useLogoutDevice, useRegister, useRevokeSession, useVerifyOtp } from './hooks';
+import { useSession } from '../../session/SessionProvider';
 
 export function AuthScreen({ screenId }: { screenId: ScreenId }) {
   const meta = byId(screenId);
+  const queryClient = useQueryClient();
+  const sessionContext = useSession();
   const register = useRegister();
   const verifyOtp = useVerifyOtp();
   const login = useLogin();
   const devices = useDevices(screenId === 'SC-31');
+  const activeSessions = useActiveSessions(screenId === 'SC-31');
   const logout = useLogoutDevice();
+  const revokeSession = useRevokeSession();
 
   const registerForm = useForm<RegisterFormValues>({ resolver: zodResolver(registerSchema), defaultValues: { email: '', dni: '', password: '' } });
   const otpForm = useForm<OtpFormValues>({ resolver: zodResolver(otpSchema), defaultValues: { userId: '', otp: '' } });
-  const loginForm = useForm<LoginFormValues>({ resolver: zodResolver(loginSchema), defaultValues: { identifier: '', password: '', deviceId: 'device-mobile-ar' } });
+  const loginForm = useForm<LoginFormValues>({ resolver: zodResolver(loginSchema), defaultValues: { identifier: '', password: '', deviceId: sessionContext.deviceId } });
 
   return (
     <FeatureScreen title={`${meta.id} · ${meta.title}`} subtitle={meta.description}>
@@ -49,32 +55,74 @@ export function AuthScreen({ screenId }: { screenId: ScreenId }) {
 
       {screenId === 'SC-04' && (
         <Card title="Ingreso seguro">
+          {sessionContext.isBiometricAvailable ? (
+            <PrimaryButton
+              label={sessionContext.isBiometricLocked ? 'Desbloquear con biometría' : 'Activar biometría para próximos ingresos'}
+              onPress={async () => {
+                if (sessionContext.isBiometricLocked) {
+                  await sessionContext.unlockWithBiometrics();
+                } else {
+                  await sessionContext.setBiometricPreference(true);
+                }
+              }}
+            />
+          ) : (
+            <Text>Biometría no disponible. Continuá con OTP o contraseña.</Text>
+          )}
+          {sessionContext.biometricError ? <Text>{sessionContext.biometricError}</Text> : null}
           <FieldLabel>Email o DNI</FieldLabel>
           <Input accessibilityLabel="Email o DNI" value={loginForm.watch('identifier')} onChangeText={(value) => loginForm.setValue('identifier', value)} autoCapitalize="none" />
           <FieldLabel>Contraseña</FieldLabel>
           <Input accessibilityLabel="Contraseña de ingreso" secureTextEntry value={loginForm.watch('password')} onChangeText={(value) => loginForm.setValue('password', value)} />
-          <PrimaryButton label="Entrar a mi cuenta" onPress={loginForm.handleSubmit((values) => login.mutate(values))} disabled={login.isPending} />
+          <PrimaryButton label="Entrar a mi cuenta" onPress={loginForm.handleSubmit((values) => login.mutate({ ...values, deviceId: sessionContext.deviceId }))} disabled={login.isPending} />
+          <Text>Fallback: si biometría falla, podés validar OTP y volver a ingresar con contraseña.</Text>
           <StateBlock isLoading={login.isPending} error={login.error ? authErrorToMessage(login.error) : null} success={login.data ? <Text>Sesión iniciada en {login.data.session.deviceId}</Text> : null} />
           <NextStep to="/sc/sc-06" label="Comenzar reserva de turnos" />
         </Card>
       )}
 
       {screenId === 'SC-31' && (
-        <Card title="Dispositivos vinculados">
+        <Card title="Sesiones activas y dispositivos">
           <StateBlock
-            isLoading={devices.isLoading}
-            error={devices.error ? authErrorToMessage(devices.error) : null}
+            isLoading={devices.isLoading || activeSessions.isLoading}
+            error={(devices.error || activeSessions.error) ? authErrorToMessage(devices.error || activeSessions.error) : null}
             isEmpty={!devices.data?.length}
             emptyText="No hay dispositivos asociados a tu cuenta."
-            success={devices.data?.map((device) => (
-              <Card key={device.deviceId} title={device.current ? 'Este dispositivo' : 'Dispositivo'}>
-                <Text>Id: {device.deviceId}</Text>
-                <Text>Último acceso: {device.lastSeenAt}</Text>
-                {!device.current ? (
-                  <PrimaryButton label="Cerrar sesión en este dispositivo" onPress={() => logout.mutate({ deviceId: device.deviceId })} />
-                ) : null}
-              </Card>
-            ))}
+            success={
+              <>
+                {devices.data?.map((device) => (
+                  <Card key={device.deviceId} title={device.current ? 'Este dispositivo' : 'Dispositivo'}>
+                    <Text>Id: {device.deviceId}</Text>
+                    <Text>Último acceso: {device.lastSeenAt}</Text>
+                    {!device.current ? (
+                      <PrimaryButton
+                        label="Cerrar sesión en este dispositivo"
+                        onPress={() => logout.mutate(
+                          { deviceId: device.deviceId },
+                          { onSuccess: () => queryClient.invalidateQueries({ queryKey: ['auth'] }) },
+                        )}
+                      />
+                    ) : null}
+                  </Card>
+                ))}
+                {activeSessions.data?.map((remoteSession) => (
+                  <Card key={remoteSession.sessionId} title={remoteSession.current ? 'Sesión actual' : 'Sesión remota'}>
+                    <Text>Sesión: {remoteSession.sessionId}</Text>
+                    <Text>DeviceId: {remoteSession.deviceId}</Text>
+                    <Text>Última actividad: {remoteSession.lastSeenAt}</Text>
+                    {!remoteSession.current ? (
+                      <PrimaryButton
+                        label="Cerrar sesión remota"
+                        onPress={() => revokeSession.mutate(
+                          { sessionId: remoteSession.sessionId },
+                          { onSuccess: () => queryClient.invalidateQueries({ queryKey: ['auth'] }) },
+                        )}
+                      />
+                    ) : null}
+                  </Card>
+                ))}
+              </>
+            }
           />
         </Card>
       )}

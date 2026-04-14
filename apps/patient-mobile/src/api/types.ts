@@ -1,5 +1,6 @@
 export type Tokens = { accessToken: string; refreshToken: string; expiresIn: number };
 export type SessionInfo = { userId: string; deviceId: string; activeProfileId: string | null };
+export type AuthAuditEvent = 'LOGIN' | 'LOGIN_FAILED' | 'LOGOUT' | 'SESSION_REVOKED';
 export type ApiError = { status: number; message: string; code?: string };
 
 export type Specialty = { id: string; name: string };

@@ -14,6 +14,7 @@
     "@hookform/resolvers": "^3.9.0",
     "@tanstack/react-query": "^5.51.1",
     "expo": "~51.0.0",
+    "expo-local-authentication": "~14.0.1",
     "expo-router": "~3.5.17",
     "expo-secure-store": "~13.0.2",
     "react": "18.2.0",
